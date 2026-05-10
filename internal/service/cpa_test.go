@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -56,8 +57,56 @@ func TestAddAccountRecordsPreservesCPAOAuthMetadata(t *testing.T) {
 		t.Fatalf("CPA auth files = %#v skipped %#v, want one file and no skipped", files, skipped)
 	}
 	payload := files[0]["payload"].(map[string]any)
-	if payload["type"] != "codex" || payload["refresh_token"] != "refresh-token" || payload["id_token"] != "id-token" || payload["account_id"] != "acct-123" {
+	metadata := payload["metadata"].(map[string]any)
+	if payload["type"] != "codex" ||
+		payload["refresh_token"] != "refresh-token" ||
+		payload["id_token"] != "id-token" ||
+		payload["account_id"] != "acct-123" ||
+		payload["chatgpt_account_id"] != "acct-123" ||
+		metadata["account_id"] != "acct-123" {
 		t.Fatalf("CPA payload = %#v, want full codex auth metadata", payload)
+	}
+}
+
+func TestAddAccountRecordsDerivesCPAAccountIDFromIDToken(t *testing.T) {
+	accounts := newTestAccountService(t)
+	idToken := testUnsignedJWT(t, map[string]any{
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": "acct-from-id-token",
+		},
+	})
+
+	result := accounts.AddAccountRecords([]map[string]any{{
+		"type":          "codex",
+		"access_token":  "access-from-id-token",
+		"refresh_token": "refresh-from-id-token",
+		"id_token":      idToken,
+		"email":         "id-token@example.com",
+	}})
+	if result["added"] != 1 || result["skipped"] != 0 {
+		t.Fatalf("AddAccountRecords() = %#v, want added 1 skipped 0", result)
+	}
+
+	account := accounts.GetAccount("access-from-id-token")
+	if account["account_id"] != "acct-from-id-token" || account["chatgpt_account_id"] != "acct-from-id-token" {
+		t.Fatalf("account ids = %#v, want account id from id_token", account)
+	}
+
+	public := accounts.ListAccounts()
+	if len(public) != 1 || public[0]["cpaExportReady"] != true {
+		t.Fatalf("public account metadata = %#v, want CPA export ready", public)
+	}
+
+	files, skipped := accounts.ListCPAAuthFilesByIDs(nil, false)
+	if len(skipped) != 0 || len(files) != 1 {
+		t.Fatalf("CPA auth files = %#v skipped %#v, want one file and no skipped", files, skipped)
+	}
+	payload := files[0]["payload"].(map[string]any)
+	metadata := payload["metadata"].(map[string]any)
+	if payload["account_id"] != "acct-from-id-token" ||
+		payload["chatgpt_account_id"] != "acct-from-id-token" ||
+		metadata["account_id"] != "acct-from-id-token" {
+		t.Fatalf("CPA payload = %#v, want account id derived from id_token", payload)
 	}
 }
 
@@ -154,9 +203,25 @@ func TestCPAExportUploadsAuthFiles(t *testing.T) {
 	if job["status"] != "completed" || job["exported"] != 1 || job["failed"] != 0 {
 		t.Fatalf("export job = %#v, want completed exported 1", job)
 	}
-	if uploadedName == "" || uploadedPayload["type"] != "codex" || uploadedPayload["refresh_token"] != "export-refresh" || uploadedPayload["id_token"] != "export-id" {
+	if uploadedName == "" ||
+		uploadedPayload["type"] != "codex" ||
+		uploadedPayload["refresh_token"] != "export-refresh" ||
+		uploadedPayload["id_token"] != "export-id" ||
+		uploadedPayload["account_id"] != "export-account" ||
+		uploadedPayload["chatgpt_account_id"] != "export-account" {
 		t.Fatalf("uploaded name=%q payload=%#v, want CPA codex auth file", uploadedName, uploadedPayload)
 	}
+}
+
+func testUnsignedJWT(t *testing.T, claims map[string]any) string {
+	t.Helper()
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("marshal jwt claims: %v", err)
+	}
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	body := base64.RawURLEncoding.EncodeToString(payload)
+	return header + "." + body + "."
 }
 
 func waitForCPAJob(t *testing.T, get func() map[string]any) map[string]any {

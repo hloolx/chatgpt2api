@@ -925,10 +925,14 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     try {
       const data = await fetchAccounts();
       const accounts = Array.isArray(data.items) ? data.items : [];
+      const readyAccountIds = accounts
+        .filter((item) => item.cpaExportReady)
+        .map((item) => item.id)
+        .filter(Boolean);
       set({
         exportBrowserPool: pool,
         exportAccounts: accounts,
-        selectedAccountIds: accounts.map((item) => item.id).filter(Boolean),
+        selectedAccountIds: readyAccountIds,
         exportQuery: "",
         exportPage: 1,
         exportBrowserOpen: true,
@@ -936,7 +940,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       if (accounts.length === 0) {
         toast.error("本地号池暂无可回传账号");
       } else {
-        toast.success(`读取成功，共 ${accounts.length} 个本地账号`);
+        toast.success(`读取成功，默认选择 ${readyAccountIds.length}/${accounts.length} 个完整 OAuth 账号`);
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "读取本地账号失败");

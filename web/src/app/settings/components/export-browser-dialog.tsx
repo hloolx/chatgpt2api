@@ -222,7 +222,7 @@ export function ExportBrowserDialog() {
                         variant={account.cpaExportReady ? "success" : "warning"}
                         className="rounded-md"
                       >
-                        {account.cpaExportReady ? "完整 OAuth" : "缺少刷新信息"}
+                        {account.cpaExportReady ? "完整 OAuth" : "缺少凭证信息"}
                       </Badge>
                     </div>
                   </label>
@@ -264,8 +264,8 @@ export function ExportBrowserDialog() {
 
         {selectedIncompleteCount > 0 ? (
           <div className="rounded-[13px] border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-            已选账号里有 {selectedIncompleteCount} 个缺少 refresh_token 或 id_token。
-            仍会尝试回传，但 CPA 侧后续可能无法自动刷新。
+            已选账号里有 {selectedIncompleteCount} 个缺少 refresh_token、id_token 或 ChatGPT 账号 ID。
+            仍会尝试回传，但 CPA 侧可能无法作为 Codex 凭证使用或自动刷新。
           </div>
         ) : null}
 

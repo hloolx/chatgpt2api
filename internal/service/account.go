@@ -1194,10 +1194,16 @@ func normalizeAccountImportRecord(record map[string]any) map[string]any {
 	if refreshToken := firstNonEmpty(util.Clean(next["refresh_token"]), util.Clean(next["refreshToken"])); refreshToken != "" {
 		next["refresh_token"] = refreshToken
 	}
-	if idToken := firstNonEmpty(util.Clean(next["id_token"]), util.Clean(next["idToken"])); idToken != "" {
+	idToken := firstNonEmpty(util.Clean(next["id_token"]), util.Clean(next["idToken"]))
+	if idToken != "" {
 		next["id_token"] = idToken
 	}
-	if accountID := firstNonEmpty(util.Clean(next["account_id"]), util.Clean(next["accountId"]), util.Clean(next["chatgpt_account_id"])); accountID != "" {
+	if accountID := firstNonEmpty(
+		util.Clean(next["account_id"]),
+		util.Clean(next["accountId"]),
+		util.Clean(next["chatgpt_account_id"]),
+		chatGPTAccountIDFromPayload(decodeAccessTokenPayload(idToken)),
+	); accountID != "" {
 		next["account_id"] = accountID
 		next["chatgpt_account_id"] = accountID
 	}
@@ -1270,9 +1276,11 @@ func cpaAuthPayloadForAccount(account map[string]any) (map[string]any, bool) {
 	if accessToken == "" {
 		return nil, false
 	}
+	idToken := util.Clean(account["id_token"])
 	accountID := firstNonEmpty(
 		util.Clean(account["account_id"]),
 		util.Clean(account["chatgpt_account_id"]),
+		chatGPTAccountIDFromPayload(decodeAccessTokenPayload(idToken)),
 		chatGPTAccountIDFromPayload(decodeAccessTokenPayload(accessToken)),
 	)
 	payload := map[string]any{
@@ -1284,11 +1292,12 @@ func cpaAuthPayloadForAccount(account map[string]any) (map[string]any, bool) {
 	if refreshToken := util.Clean(account["refresh_token"]); refreshToken != "" {
 		payload["refresh_token"] = refreshToken
 	}
-	if idToken := util.Clean(account["id_token"]); idToken != "" {
+	if idToken != "" {
 		payload["id_token"] = idToken
 	}
 	if accountID != "" {
 		payload["account_id"] = accountID
+		payload["chatgpt_account_id"] = accountID
 	}
 	if email := util.Clean(account["email"]); email != "" {
 		payload["email"] = email
@@ -1299,11 +1308,16 @@ func cpaAuthPayloadForAccount(account map[string]any) (map[string]any, bool) {
 	if planType := normalizeAccountType(account["type"]); planType != "" {
 		payload["plan_type"] = planType
 	}
-	payload["metadata"] = map[string]any{
+	metadata := map[string]any{
 		"source":           "chatgpt2api",
 		"local_account_id": accountIDFromToken(accessToken),
 		"exported_at":      util.NowISO(),
 	}
+	if accountID != "" {
+		metadata["account_id"] = accountID
+		metadata["chatgpt_account_id"] = accountID
+	}
+	payload["metadata"] = metadata
 	return payload, !cpaOAuthMetadataComplete(account)
 }
 
@@ -1318,6 +1332,7 @@ func cpaOAuthMetadataComplete(account map[string]any) bool {
 	accountID := firstNonEmpty(
 		util.Clean(account["account_id"]),
 		util.Clean(account["chatgpt_account_id"]),
+		chatGPTAccountIDFromPayload(decodeAccessTokenPayload(util.Clean(account["id_token"]))),
 		chatGPTAccountIDFromPayload(decodeAccessTokenPayload(accessToken)),
 	)
 	return util.Clean(account["refresh_token"]) != "" && util.Clean(account["id_token"]) != "" && accountID != ""
