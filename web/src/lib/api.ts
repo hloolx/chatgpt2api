@@ -160,6 +160,9 @@ export type Account = {
   success: number;
   fail: number;
   lastUsedAt: string | null;
+  hasRefreshToken?: boolean;
+  hasIdToken?: boolean;
+  cpaExportReady?: boolean;
 };
 
 type AccountListResponse = {
@@ -181,6 +184,15 @@ type AccountMutationResponse = {
   total?: number;
   failed?: number;
   duration_ms?: number;
+};
+
+export type AccountImportRecord = Record<string, unknown> & {
+  access_token?: string;
+  accessToken?: string;
+  refresh_token?: string;
+  id_token?: string;
+  account_id?: string;
+  email?: string;
 };
 
 export type AccountRefreshResult = {
@@ -653,6 +665,13 @@ export async function createAccounts(tokens: string[]) {
   return httpRequest<AccountMutationResponse>("/api/accounts", {
     method: "POST",
     body: { tokens },
+  });
+}
+
+export async function createAccountRecords(accounts: AccountImportRecord[]) {
+  return httpRequest<AccountMutationResponse>("/api/accounts", {
+    method: "POST",
+    body: { accounts },
   });
 }
 
@@ -1223,6 +1242,7 @@ export type CPAPool = {
   name: string;
   base_url: string;
   import_job?: CPAImportJob | null;
+  export_job?: CPAExportJob | null;
 };
 
 export type CPARemoteFile = {
@@ -1240,6 +1260,19 @@ export type CPAImportJob = {
   added: number;
   skipped: number;
   refreshed: number;
+  failed: number;
+  errors: Array<{ name: string; error: string }>;
+};
+
+export type CPAExportJob = {
+  job_id: string;
+  status: "pending" | "running" | "completed" | "failed";
+  created_at: string;
+  updated_at: string;
+  total: number;
+  completed: number;
+  exported: number;
+  missing_oauth: number;
   failed: number;
   errors: Array<{ name: string; error: string }>;
 };
@@ -1284,6 +1317,17 @@ export async function startCPAImport(poolId: string, names: string[]) {
 
 export async function fetchCPAPoolImportJob(poolId: string) {
   return httpRequest<{ import_job: CPAImportJob | null }>(`/api/cpa/pools/${poolId}/import`);
+}
+
+export async function startCPAExport(poolId: string, accountIds: string[] = [], includeIncomplete = true) {
+  return httpRequest<{ export_job: CPAExportJob | null }>(`/api/cpa/pools/${poolId}/export`, {
+    method: "POST",
+    body: { account_ids: accountIds, include_incomplete: includeIncomplete },
+  });
+}
+
+export async function fetchCPAPoolExportJob(poolId: string) {
+  return httpRequest<{ export_job: CPAExportJob | null }>(`/api/cpa/pools/${poolId}/export`);
 }
 
 // ── Sub2API ────────────────────────────────────────────────────────

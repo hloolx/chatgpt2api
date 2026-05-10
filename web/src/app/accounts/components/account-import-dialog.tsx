@@ -26,7 +26,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { createAccounts, type Account } from "@/lib/api";
+import { createAccountRecords, createAccounts, type Account, type AccountImportRecord } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 type ImportMethod = "menu" | "token" | "session" | "cpa";
@@ -37,7 +37,7 @@ type AccountImportDialogProps = {
 };
 
 type PendingCpaImport = {
-  tokens: string[];
+  accounts: AccountImportRecord[];
   parsedFileCount: number;
   errorCount: number;
 };
@@ -57,8 +57,24 @@ function getSessionAccessToken(value: unknown) {
 }
 
 function getCpaAccessToken(value: unknown) {
-  const token = (value as { access_token?: unknown })?.access_token;
+  const source = value as { access_token?: unknown; accessToken?: unknown };
+  const token = source?.access_token ?? source?.accessToken;
   return typeof token === "string" ? token.trim() : "";
+}
+
+function getCpaAuthRecord(value: unknown): AccountImportRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const source = value as Record<string, unknown>;
+  const accessToken = getCpaAccessToken(source);
+  if (!accessToken) {
+    return null;
+  }
+  return {
+    ...source,
+    access_token: accessToken,
+  };
 }
 
 function readFileAsText(file: File) {
@@ -163,6 +179,41 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
     }
   };
 
+  const submitAccountRecords = async (accounts: AccountImportRecord[], successText?: string) => {
+    const normalizedAccounts = accounts
+      .map((item) => getCpaAuthRecord(item))
+      .filter((item): item is AccountImportRecord => Boolean(item));
+
+    if (normalizedAccounts.length === 0) {
+      toast.error("请先提供至少一个可用 CPA JSON");
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const data = await createAccountRecords(normalizedAccounts);
+      onImported(data.items);
+      setOpen(false);
+      resetState();
+
+      if ((data.errors?.length ?? 0) > 0) {
+        const firstError = data.errors?.[0]?.error;
+        toast.error(
+          `${successText ?? "导入完成"}，新增 ${data.added ?? 0} 个，已刷新 ${data.refreshed ?? 0} 个，失败 ${data.errors?.length ?? 0} 个${firstError ? `，首个错误：${firstError}` : ""}`,
+        );
+      } else {
+        toast.success(
+          `${successText ?? "导入完成"}，新增 ${data.added ?? 0} 个，跳过 ${data.skipped ?? 0} 个重复项，已保留 CPA OAuth 元数据`,
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "导入 CPA JSON 失败";
+      toast.error(message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const handleImportTokenText = async () => {
     await submitTokens(splitTokens(tokenInput), "Access Token 导入完成");
   };
@@ -230,15 +281,15 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
         files.map(async (file) => {
           const raw = await readFileAsText(file);
           const parsed = JSON.parse(raw) as unknown;
-          const token = getCpaAccessToken(parsed);
+          const account = getCpaAuthRecord(parsed);
           return {
-            token,
+            account,
           };
         }),
       );
 
-      const tokens = results.map((item) => item.token).filter((item): item is string => Boolean(item));
-      const parsedFileCount = tokens.length;
+      const accounts = results.map((item) => item.account).filter((item): item is AccountImportRecord => Boolean(item));
+      const parsedFileCount = accounts.length;
       const errorCount = results.length - parsedFileCount;
 
       if (parsedFileCount === 0) {
@@ -247,7 +298,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
       }
 
       setPendingCpaImport({
-        tokens,
+        accounts,
         parsedFileCount,
         errorCount,
       });
@@ -553,7 +604,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
             </Button>
             <Button
               className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
-              onClick={() => void submitTokens(pendingCpaImport?.tokens ?? [], "CPA JSON 导入完成")}
+              onClick={() => void submitAccountRecords(pendingCpaImport?.accounts ?? [], "CPA JSON 导入完成")}
               disabled={isSubmitting || !pendingCpaImport}
             >
               {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}

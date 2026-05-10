@@ -266,7 +266,9 @@ func (s *RegisterService) runWorker(index int, config map[string]any) registerWo
 		return registerWorkerResult{ok: false, index: index, err: err.Error(), cost: cost}
 	}
 	if s.accounts != nil {
-		s.accounts.AddAccounts([]string{accessToken})
+		accountRecord := util.CopyMap(result)
+		delete(accountRecord, "password")
+		s.accounts.AddAccountRecords([]map[string]any{accountRecord})
 		s.accounts.RefreshAccounts(context.Background(), []string{accessToken})
 	}
 	s.appendLog(fmt.Sprintf("%s 注册成功，本次耗时%.1fs", util.Clean(result["email"]), cost), "green")

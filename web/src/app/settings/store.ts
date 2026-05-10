@@ -14,6 +14,7 @@ import {
   resetRegister as resetRegisterApi,
   fetchSettingsConfig,
   startRegister,
+  startCPAExport,
   startCPAImport,
   stopRegister,
   updateCPAPool,
@@ -112,6 +113,7 @@ type SettingsStore = {
   isLoadingPools: boolean;
   deletingId: string | null;
   loadingFilesId: string | null;
+  exportingPoolId: string | null;
 
   dialogOpen: boolean;
   editingPool: CPAPool | null;
@@ -187,6 +189,7 @@ type SettingsStore = {
   setShowSecret: (checked: boolean) => void;
   savePool: () => Promise<void>;
   deletePool: (pool: CPAPool) => Promise<void>;
+  exportPool: (pool: CPAPool) => Promise<void>;
 
   browseFiles: (pool: CPAPool) => Promise<void>;
   setBrowserOpen: (open: boolean) => void;
@@ -215,6 +218,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   isLoadingPools: true,
   deletingId: null,
   loadingFilesId: null,
+  exportingPoolId: null,
 
   dialogOpen: false,
   editingPool: null,
@@ -782,6 +786,23 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       toast.error(error instanceof Error ? error.message : "删除失败");
     } finally {
       set({ deletingId: null });
+    }
+  },
+
+  exportPool: async (pool) => {
+    set({ exportingPoolId: pool.id });
+    try {
+      const result = await startCPAExport(pool.id, [], true);
+      set((state) => ({
+        pools: state.pools.map((item) =>
+          item.id === pool.id ? { ...item, export_job: result.export_job } : item,
+        ),
+      }));
+      toast.success("CPA 回传任务已启动");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "启动 CPA 回传失败");
+    } finally {
+      set({ exportingPoolId: null });
     }
   },
 

@@ -795,11 +795,22 @@ func (a *App) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/api/accounts" && r.Method == http.MethodPost:
 		body, _ := readJSONMap(r)
 		tokens := util.AsStringSlice(body["tokens"])
-		if len(tokens) == 0 {
-			util.WriteError(w, http.StatusBadRequest, "tokens is required")
+		records := util.AsMapSlice(body["accounts"])
+		if len(tokens) == 0 && len(records) == 0 {
+			util.WriteError(w, http.StatusBadRequest, "tokens or accounts is required")
 			return
 		}
-		result := a.accounts.AddAccounts(tokens)
+		var result map[string]any
+		if len(records) > 0 {
+			result = a.accounts.AddAccountRecords(records)
+			for _, record := range records {
+				if token := firstNonEmpty(util.Clean(record["access_token"]), util.Clean(record["accessToken"])); token != "" {
+					tokens = append(tokens, token)
+				}
+			}
+		} else {
+			result = a.accounts.AddAccounts(tokens)
+		}
 		refresh := a.accounts.RefreshAccounts(r.Context(), tokens)
 		for key, value := range refresh {
 			if key == "refreshed" || key == "errors" || key == "items" {
@@ -1008,6 +1019,26 @@ func (a *App) handleCPA(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			util.WriteJSON(w, http.StatusOK, map[string]any{"import_job": job})
+			return
+		}
+	}
+	if len(parts) == 5 && parts[4] == "export" {
+		if r.Method == http.MethodGet {
+			util.WriteJSON(w, http.StatusOK, map[string]any{"export_job": pool["export_job"]})
+			return
+		}
+		if r.Method == http.MethodPost {
+			body, _ := readJSONMap(r)
+			includeIncomplete := true
+			if value, ok := body["include_incomplete"]; ok {
+				includeIncomplete = util.ToBool(value)
+			}
+			job, err := a.cpaImport.StartExport(pool, util.AsStringSlice(body["account_ids"]), includeIncomplete)
+			if err != nil {
+				util.WriteError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			util.WriteJSON(w, http.StatusOK, map[string]any{"export_job": job})
 			return
 		}
 	}

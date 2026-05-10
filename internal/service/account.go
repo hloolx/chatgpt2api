@@ -133,6 +133,18 @@ func (s *AccountService) AddAccounts(tokens []string) map[string]any {
 	if len(cleaned) == 0 {
 		return map[string]any{"added": 0, "skipped": 0, "items": s.ListAccounts()}
 	}
+	records := make([]map[string]any, 0, len(cleaned))
+	for _, token := range cleaned {
+		records = append(records, map[string]any{"access_token": token})
+	}
+	return s.AddAccountRecords(records)
+}
+
+func (s *AccountService) AddAccountRecords(records []map[string]any) map[string]any {
+	cleaned := cleanAccountRecords(records)
+	if len(cleaned) == 0 {
+		return map[string]any{"added": 0, "skipped": 0, "items": s.ListAccounts()}
+	}
 	s.mu.Lock()
 	indexed := map[string]map[string]any{}
 	order := make([]string, 0, len(s.items)+len(cleaned))
@@ -145,7 +157,11 @@ func (s *AccountService) AddAccounts(tokens []string) map[string]any {
 		order = append(order, token)
 	}
 	added, skipped := 0, 0
-	for _, token := range cleaned {
+	for _, record := range cleaned {
+		token := util.Clean(record["access_token"])
+		if token == "" {
+			continue
+		}
 		current, ok := indexed[token]
 		if ok {
 			skipped++
@@ -154,7 +170,7 @@ func (s *AccountService) AddAccounts(tokens []string) map[string]any {
 			current = map[string]any{}
 			order = append(order, token)
 		}
-		normalized := normalizeAccount(mergeMaps(current, map[string]any{"access_token": token, "type": util.ValueOr(current["type"], "Free")}))
+		normalized := normalizeAccount(mergeMaps(current, record, map[string]any{"access_token": token}))
 		if normalized != nil {
 			indexed[token] = normalized
 		}
@@ -179,6 +195,49 @@ func (s *AccountService) AddAccounts(tokens []string) map[string]any {
 		"skipped":        skipped,
 	})
 	return map[string]any{"added": added, "skipped": skipped, "items": items}
+}
+
+func (s *AccountService) ListCPAAuthFilesByIDs(ids []string, includeIncomplete bool) ([]map[string]any, []map[string]any) {
+	targets := cleanAccountIDs(ids)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	files := []map[string]any{}
+	skipped := []map[string]any{}
+	for _, account := range s.items {
+		token := util.Clean(account["access_token"])
+		if token == "" {
+			continue
+		}
+		localID := accountIDFromToken(token)
+		if len(targets) > 0 {
+			if _, ok := targets[localID]; !ok {
+				continue
+			}
+		}
+		payload, missing := cpaAuthPayloadForAccount(account)
+		if payload == nil {
+			continue
+		}
+		name := cpaAuthFileName(account, localID)
+		if missing && !includeIncomplete {
+			skipped = append(skipped, map[string]any{
+				"name":       name,
+				"account_id": localID,
+				"email":      account["email"],
+				"error":      "missing refresh_token, id_token, or account_id",
+			})
+			continue
+		}
+		files = append(files, map[string]any{
+			"name":                   name,
+			"account_id":             localID,
+			"email":                  account["email"],
+			"payload":                payload,
+			"missing_oauth_metadata": missing,
+		})
+	}
+	return files, skipped
 }
 
 func (s *AccountService) DeleteAccounts(tokens []string) map[string]any {
@@ -955,7 +1014,23 @@ func normalizeAccount(item map[string]any) map[string]any {
 	}
 	normalized := util.CopyMap(item)
 	normalized["access_token"] = accessToken
-	normalized["type"] = firstNonEmpty(util.Clean(normalized["type"]), "Free")
+	if authType := util.Clean(normalized["auth_type"]); authType != "" {
+		normalized["auth_type"] = authType
+	} else if providerType := authProviderType(normalized["type"]); providerType != "" {
+		normalized["auth_type"] = providerType
+	}
+	planType := normalizeAccountType(normalized["type"])
+	if planType == "" {
+		planType = firstNonEmpty(
+			normalizeAccountType(normalized["plan_type"]),
+			normalizeAccountType(normalized["account_type"]),
+			normalizeAccountType(normalized["chatgpt_plan_type"]),
+		)
+	}
+	if planType == "" {
+		planType = "Free"
+	}
+	normalized["type"] = planType
 	normalized["status"] = firstNonEmpty(util.Clean(normalized["status"]), "正常")
 	quota := util.ToInt(normalized["quota"], 0)
 	if quota < 0 {
@@ -977,8 +1052,28 @@ func normalizeAccount(item map[string]any) map[string]any {
 		normalized["chatgpt_account_id"] = accountID
 	} else if accountID := util.Clean(normalized["account_id"]); accountID != "" {
 		normalized["chatgpt_account_id"] = accountID
+	} else if accountID := chatGPTAccountIDFromPayload(decodeAccessTokenPayload(accessToken)); accountID != "" {
+		normalized["chatgpt_account_id"] = accountID
 	} else {
 		normalized["chatgpt_account_id"] = nil
+	}
+	if accountID := firstNonEmpty(util.Clean(normalized["account_id"]), util.Clean(normalized["chatgpt_account_id"])); accountID != "" {
+		normalized["account_id"] = accountID
+	} else {
+		normalized["account_id"] = nil
+	}
+	for _, key := range []string{"refresh_token", "id_token", "last_refresh", "cpa_file_name"} {
+		if value := util.Clean(normalized[key]); value != "" {
+			normalized[key] = value
+		} else {
+			delete(normalized, key)
+		}
+	}
+	if _, ok := normalized["expired"]; ok {
+		normalized["expired"] = util.ToBool(normalized["expired"])
+	}
+	if _, ok := normalized["disabled"]; ok {
+		normalized["disabled"] = util.ToBool(normalized["disabled"])
 	}
 	limits := anyList(normalized["limits_progress"])
 	normalized["limits_progress"] = limits
@@ -1021,6 +1116,9 @@ func publicAccounts(accounts []map[string]any) []map[string]any {
 			"success":            util.ToInt(account["success"], 0),
 			"fail":               util.ToInt(account["fail"], 0),
 			"lastUsedAt":         account["last_used_at"],
+			"hasRefreshToken":    util.Clean(account["refresh_token"]) != "",
+			"hasIdToken":         util.Clean(account["id_token"]) != "",
+			"cpaExportReady":     cpaOAuthMetadataComplete(account),
 		})
 	}
 	return out
@@ -1056,6 +1154,65 @@ func cleanTokens(tokens []string) []string {
 		out = append(out, token)
 	}
 	return out
+}
+
+func cleanAccountRecords(records []map[string]any) []map[string]any {
+	indexed := map[string]map[string]any{}
+	order := make([]string, 0, len(records))
+	for _, record := range records {
+		normalized := normalizeAccountImportRecord(record)
+		if normalized == nil {
+			continue
+		}
+		token := util.Clean(normalized["access_token"])
+		if token == "" {
+			continue
+		}
+		if _, ok := indexed[token]; !ok {
+			order = append(order, token)
+		}
+		indexed[token] = normalizeAccount(mergeMaps(indexed[token], normalized))
+	}
+	out := make([]map[string]any, 0, len(order))
+	for _, token := range order {
+		if record := indexed[token]; record != nil {
+			out = append(out, record)
+		}
+	}
+	return out
+}
+
+func normalizeAccountImportRecord(record map[string]any) map[string]any {
+	if record == nil {
+		return nil
+	}
+	next := util.CopyMap(record)
+	delete(next, "password")
+	if accessToken := firstNonEmpty(util.Clean(next["access_token"]), util.Clean(next["accessToken"])); accessToken != "" {
+		next["access_token"] = accessToken
+	}
+	if refreshToken := firstNonEmpty(util.Clean(next["refresh_token"]), util.Clean(next["refreshToken"])); refreshToken != "" {
+		next["refresh_token"] = refreshToken
+	}
+	if idToken := firstNonEmpty(util.Clean(next["id_token"]), util.Clean(next["idToken"])); idToken != "" {
+		next["id_token"] = idToken
+	}
+	if accountID := firstNonEmpty(util.Clean(next["account_id"]), util.Clean(next["accountId"]), util.Clean(next["chatgpt_account_id"])); accountID != "" {
+		next["account_id"] = accountID
+		next["chatgpt_account_id"] = accountID
+	}
+	if lastRefresh := firstNonEmpty(util.Clean(next["last_refresh"]), util.Clean(next["lastRefresh"]), util.Clean(next["lastRefreshedAt"])); lastRefresh != "" {
+		next["last_refresh"] = lastRefresh
+	}
+	if providerType := authProviderType(next["type"]); providerType != "" {
+		next["auth_type"] = providerType
+		if plan := firstNonEmpty(normalizeAccountType(next["plan_type"]), normalizeAccountType(next["account_type"]), normalizeAccountType(next["chatgpt_plan_type"])); plan != "" {
+			next["type"] = plan
+		} else {
+			delete(next, "type")
+		}
+	}
+	return normalizeAccount(next)
 }
 
 func decodeAccessTokenPayload(accessToken string) map[string]any {
@@ -1094,6 +1251,118 @@ func chatGPTAccountIDFromPayload(payload map[string]any) string {
 		}
 	}
 	return ""
+}
+
+func authProviderType(value any) string {
+	switch strings.ToLower(util.Clean(value)) {
+	case "codex", "openai", "anthropic", "claude", "gemini", "qwen", "iflow", "antigravity":
+		return strings.ToLower(util.Clean(value))
+	default:
+		return ""
+	}
+}
+
+func cpaAuthPayloadForAccount(account map[string]any) (map[string]any, bool) {
+	if account == nil {
+		return nil, false
+	}
+	accessToken := util.Clean(account["access_token"])
+	if accessToken == "" {
+		return nil, false
+	}
+	accountID := firstNonEmpty(
+		util.Clean(account["account_id"]),
+		util.Clean(account["chatgpt_account_id"]),
+		chatGPTAccountIDFromPayload(decodeAccessTokenPayload(accessToken)),
+	)
+	payload := map[string]any{
+		"type":         firstNonEmpty(util.Clean(account["auth_type"]), "codex"),
+		"access_token": accessToken,
+		"disabled":     util.ToBool(account["disabled"]) || util.Clean(account["status"]) == "禁用",
+		"expired":      util.ToBool(account["expired"]),
+	}
+	if refreshToken := util.Clean(account["refresh_token"]); refreshToken != "" {
+		payload["refresh_token"] = refreshToken
+	}
+	if idToken := util.Clean(account["id_token"]); idToken != "" {
+		payload["id_token"] = idToken
+	}
+	if accountID != "" {
+		payload["account_id"] = accountID
+	}
+	if email := util.Clean(account["email"]); email != "" {
+		payload["email"] = email
+	}
+	if lastRefresh := util.Clean(account["last_refresh"]); lastRefresh != "" {
+		payload["last_refresh"] = lastRefresh
+	}
+	if planType := normalizeAccountType(account["type"]); planType != "" {
+		payload["plan_type"] = planType
+	}
+	payload["metadata"] = map[string]any{
+		"source":           "chatgpt2api",
+		"local_account_id": accountIDFromToken(accessToken),
+		"exported_at":      util.NowISO(),
+	}
+	return payload, !cpaOAuthMetadataComplete(account)
+}
+
+func cpaOAuthMetadataComplete(account map[string]any) bool {
+	if account == nil {
+		return false
+	}
+	accessToken := util.Clean(account["access_token"])
+	if accessToken == "" {
+		return false
+	}
+	accountID := firstNonEmpty(
+		util.Clean(account["account_id"]),
+		util.Clean(account["chatgpt_account_id"]),
+		chatGPTAccountIDFromPayload(decodeAccessTokenPayload(accessToken)),
+	)
+	return util.Clean(account["refresh_token"]) != "" && util.Clean(account["id_token"]) != "" && accountID != ""
+}
+
+func cpaAuthFileName(account map[string]any, localID string) string {
+	base := firstNonEmpty(util.Clean(account["email"]), util.Clean(account["account_id"]), util.Clean(account["chatgpt_account_id"]), localID)
+	base = strings.TrimSuffix(base, ".json")
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = "account-" + util.NewHex(8)
+	}
+	base = sanitizeAuthFileNamePart(base)
+	if !strings.HasPrefix(strings.ToLower(base), "codex-") {
+		base = "codex-" + base
+	}
+	if len(base) > 120 {
+		base = base[:120]
+	}
+	return base + ".json"
+}
+
+func sanitizeAuthFileNamePart(value string) string {
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range value {
+		allowed := r >= 'a' && r <= 'z' ||
+			r >= 'A' && r <= 'Z' ||
+			r >= '0' && r <= '9' ||
+			r == '@' || r == '.' || r == '_' || r == '-'
+		if allowed {
+			b.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore {
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	out := strings.Trim(b.String(), "._- ")
+	if out == "" {
+		return "account"
+	}
+	return out
 }
 
 func normalizeAccountType(value any) string {
