@@ -277,11 +277,13 @@ func buildResponsesImagePayload(request ResponsesImageRequest) ([]byte, error) {
 	}
 	payload := map[string]any{
 		"model":               ResponsesImageMainModel,
-		"input":               []any{map[string]any{"role": "user", "content": content}},
+		"input":               []any{map[string]any{"type": "message", "role": "user", "content": content}},
 		"tools":               []any{tool},
-		"instructions":        "You generate and edit images for the user.",
+		"tool_choice":         map[string]any{"type": "image_generation"},
+		"instructions":        "",
 		"stream":              true,
 		"store":               false,
+		"reasoning":           map[string]any{"effort": "medium", "summary": "auto"},
 		"parallel_tool_calls": true,
 		"include":             []string{"reasoning.encrypted_content"},
 	}

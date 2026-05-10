@@ -593,7 +593,7 @@ func TestBuildResponsesImagePayloadSendsCompressionOnlyForJPEG(t *testing.T) {
 	}
 }
 
-func TestBuildResponsesImagePayloadDoesNotForceImageToolChoice(t *testing.T) {
+func TestBuildResponsesImagePayloadMatchesCPAImageResponsesShape(t *testing.T) {
 	payload, err := buildResponsesImagePayload(ResponsesImageRequest{
 		Prompt: "生成封面",
 		Model:  "codex-gpt-image-2",
@@ -605,8 +605,9 @@ func TestBuildResponsesImagePayloadDoesNotForceImageToolChoice(t *testing.T) {
 	if err := json.Unmarshal(payload, &body); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if _, ok := body["tool_choice"]; ok {
-		t.Fatalf("payload should not force tool_choice: %#v", body["tool_choice"])
+	toolChoice := body["tool_choice"].(map[string]any)
+	if toolChoice["type"] != "image_generation" {
+		t.Fatalf("tool_choice.type = %#v, want image_generation", toolChoice["type"])
 	}
 	tools := body["tools"].([]any)
 	tool := tools[0].(map[string]any)
@@ -615,6 +616,15 @@ func TestBuildResponsesImagePayloadDoesNotForceImageToolChoice(t *testing.T) {
 	}
 	if tool["model"] != "gpt-image-2" {
 		t.Fatalf("tool model = %#v, want gpt-image-2", tool["model"])
+	}
+	input := body["input"].([]any)
+	message := input[0].(map[string]any)
+	if message["type"] != "message" {
+		t.Fatalf("input item type = %#v, want message", message["type"])
+	}
+	reasoning := body["reasoning"].(map[string]any)
+	if reasoning["effort"] != "medium" || reasoning["summary"] != "auto" {
+		t.Fatalf("reasoning = %#v, want CPA image defaults", reasoning)
 	}
 }
 
