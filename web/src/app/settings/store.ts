@@ -7,6 +7,7 @@ import {
   cleanupLogs,
   createCPAPool,
   deleteCPAPool,
+  fetchAccounts,
   fetchCPAPoolFiles,
   fetchCPAPools,
   fetchLogGovernance,
@@ -23,6 +24,7 @@ import {
   updateSettingsConfig,
   type CPAPool,
   type CPARemoteFile,
+  type Account,
   type LogCleanupResult,
   type LogGovernanceSummary,
   type LoginPageImageSettings,
@@ -132,6 +134,16 @@ type SettingsStore = {
   pageSize: PageSizeOption;
   isStartingImport: boolean;
 
+  exportBrowserOpen: boolean;
+  exportBrowserPool: CPAPool | null;
+  exportAccounts: Account[];
+  selectedAccountIds: string[];
+  exportQuery: string;
+  exportPage: number;
+  exportPageSize: PageSizeOption;
+  isLoadingExportAccounts: boolean;
+  isStartingExport: boolean;
+
   initialize: () => Promise<void>;
   loadConfig: () => Promise<void>;
   saveConfig: () => Promise<void>;
@@ -189,7 +201,7 @@ type SettingsStore = {
   setShowSecret: (checked: boolean) => void;
   savePool: () => Promise<void>;
   deletePool: (pool: CPAPool) => Promise<void>;
-  exportPool: (pool: CPAPool) => Promise<void>;
+  exportPool: (pool: CPAPool, accountIds?: string[]) => Promise<boolean>;
 
   browseFiles: (pool: CPAPool) => Promise<void>;
   setBrowserOpen: (open: boolean) => void;
@@ -199,6 +211,15 @@ type SettingsStore = {
   setFilePage: (page: number) => void;
   setPageSize: (value: PageSizeOption) => void;
   startImport: () => Promise<void>;
+
+  browseExportAccounts: (pool: CPAPool) => Promise<void>;
+  setExportBrowserOpen: (open: boolean) => void;
+  toggleExportAccount: (accountId: string, checked: boolean) => void;
+  replaceSelectedAccountIds: (accountIds: string[]) => void;
+  setExportQuery: (value: string) => void;
+  setExportPage: (page: number) => void;
+  setExportPageSize: (value: PageSizeOption) => void;
+  startExport: () => Promise<void>;
 };
 
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
@@ -236,6 +257,16 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   filePage: 1,
   pageSize: "100",
   isStartingImport: false,
+
+  exportBrowserOpen: false,
+  exportBrowserPool: null,
+  exportAccounts: [],
+  selectedAccountIds: [],
+  exportQuery: "",
+  exportPage: 1,
+  exportPageSize: "100",
+  isLoadingExportAccounts: false,
+  isStartingExport: false,
 
   initialize: async () => {
     await Promise.allSettled([get().loadConfig(), get().loadPools(), get().loadLogGovernance()]);
@@ -789,18 +820,20 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     }
   },
 
-  exportPool: async (pool) => {
+  exportPool: async (pool, accountIds = []) => {
     set({ exportingPoolId: pool.id });
     try {
-      const result = await startCPAExport(pool.id, [], true);
+      const result = await startCPAExport(pool.id, accountIds, true);
       set((state) => ({
         pools: state.pools.map((item) =>
           item.id === pool.id ? { ...item, export_job: result.export_job } : item,
         ),
       }));
       toast.success("CPA 回传任务已启动");
+      return true;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "启动 CPA 回传失败");
+      return false;
     } finally {
       set({ exportingPoolId: null });
     }
@@ -884,6 +917,85 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       toast.error(error instanceof Error ? error.message : "启动导入失败");
     } finally {
       set({ isStartingImport: false });
+    }
+  },
+
+  browseExportAccounts: async (pool) => {
+    set({ isLoadingExportAccounts: true, exportingPoolId: pool.id });
+    try {
+      const data = await fetchAccounts();
+      const accounts = Array.isArray(data.items) ? data.items : [];
+      set({
+        exportBrowserPool: pool,
+        exportAccounts: accounts,
+        selectedAccountIds: accounts.map((item) => item.id).filter(Boolean),
+        exportQuery: "",
+        exportPage: 1,
+        exportBrowserOpen: true,
+      });
+      if (accounts.length === 0) {
+        toast.error("本地号池暂无可回传账号");
+      } else {
+        toast.success(`读取成功，共 ${accounts.length} 个本地账号`);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "读取本地账号失败");
+    } finally {
+      set({ isLoadingExportAccounts: false, exportingPoolId: null });
+    }
+  },
+
+  setExportBrowserOpen: (open) => {
+    set({ exportBrowserOpen: open });
+  },
+
+  toggleExportAccount: (accountId, checked) => {
+    set((state) => {
+      if (checked) {
+        return {
+          selectedAccountIds: Array.from(new Set([...state.selectedAccountIds, accountId])),
+        };
+      }
+      return {
+        selectedAccountIds: state.selectedAccountIds.filter((item) => item !== accountId),
+      };
+    });
+  },
+
+  replaceSelectedAccountIds: (accountIds) => {
+    set({ selectedAccountIds: Array.from(new Set(accountIds)) });
+  },
+
+  setExportQuery: (value) => {
+    set({ exportQuery: value, exportPage: 1 });
+  },
+
+  setExportPage: (page) => {
+    set({ exportPage: page });
+  },
+
+  setExportPageSize: (value) => {
+    set({ exportPageSize: value, exportPage: 1 });
+  },
+
+  startExport: async () => {
+    const { exportBrowserPool, selectedAccountIds } = get();
+    if (!exportBrowserPool) {
+      return;
+    }
+    if (selectedAccountIds.length === 0) {
+      toast.error("请先选择要回传的账号");
+      return;
+    }
+
+    set({ isStartingExport: true });
+    try {
+      const started = await get().exportPool(exportBrowserPool, selectedAccountIds);
+      if (started) {
+        set({ exportBrowserOpen: false });
+      }
+    } finally {
+      set({ isStartingExport: false });
     }
   },
 }));

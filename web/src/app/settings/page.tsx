@@ -9,6 +9,7 @@ import { AnnouncementsCard } from "./components/announcements-card";
 import { ConfigCard } from "./components/config-card";
 import { CPAPoolDialog } from "./components/cpa-pool-dialog";
 import { CPAPoolsCard } from "./components/cpa-pools-card";
+import { ExportBrowserDialog } from "./components/export-browser-dialog";
 import { ImportBrowserDialog } from "./components/import-browser-dialog";
 import { LinuxDoLoginCard } from "./components/linuxdo-login-card";
 import { LogGovernanceCard } from "./components/log-governance-card";
@@ -34,8 +35,14 @@ function SettingsDataController() {
 
   useEffect(() => {
     const hasRunningJobs = pools.some((pool) => {
-      const status = pool.import_job?.status;
-      return status === "pending" || status === "running";
+      const importStatus = pool.import_job?.status;
+      const exportStatus = pool.export_job?.status;
+      return (
+        importStatus === "pending" ||
+        importStatus === "running" ||
+        exportStatus === "pending" ||
+        exportStatus === "running"
+      );
     });
     if (!hasRunningJobs) {
       return;
@@ -91,6 +98,7 @@ function AdminSettingsPageContent({
       </section>
       <CPAPoolDialog />
       <ImportBrowserDialog />
+      <ExportBrowserDialog />
     </div>
   );
 }

@@ -279,7 +279,6 @@ func buildResponsesImagePayload(request ResponsesImageRequest) ([]byte, error) {
 		"model":               ResponsesImageMainModel,
 		"input":               []any{map[string]any{"role": "user", "content": content}},
 		"tools":               []any{tool},
-		"tool_choice":         map[string]any{"type": "image_generation"},
 		"instructions":        "You generate and edit images for the user.",
 		"stream":              true,
 		"store":               false,
@@ -300,18 +299,12 @@ func supportsResponsesImageOutputCompression(format string) bool {
 
 func normalizeResponsesImageToolModel(model string) string {
 	switch strings.ToLower(strings.TrimSpace(model)) {
-	case "", util.ImageModelAuto, "gpt-image-1", util.ImageModelGPT:
+	case "", util.ImageModelAuto, "gpt-image-1":
 		return ""
-	case util.ImageModelCodex:
-		return ResponsesImageCodexToolModel
+	case util.ImageModelGPT, util.ImageModelCodex:
+		return util.ImageModelGPT
 	case ResponsesImageCodexToolModel:
-		return ResponsesImageCodexToolModel
-	case util.ImageModelGPT54:
-		return util.ImageModelGPT54
-	case util.ImageModelGPT55:
-		return util.ImageModelGPT55
-	case "gpt-5-5-thinking":
-		return "gpt-5-5-thinking"
+		return util.ImageModelGPT
 	default:
 		return ""
 	}

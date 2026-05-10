@@ -27,11 +27,12 @@ export function CPAPoolsCard() {
   const deletingId = useSettingsStore((state) => state.deletingId);
   const loadingFilesId = useSettingsStore((state) => state.loadingFilesId);
   const exportingPoolId = useSettingsStore((state) => state.exportingPoolId);
+  const isLoadingExportAccounts = useSettingsStore((state) => state.isLoadingExportAccounts);
   const openAddDialog = useSettingsStore((state) => state.openAddDialog);
   const openEditDialog = useSettingsStore((state) => state.openEditDialog);
   const deletePool = useSettingsStore((state) => state.deletePool);
   const browseFiles = useSettingsStore((state) => state.browseFiles);
-  const exportPool = useSettingsStore((state) => state.exportPool);
+  const browseExportAccounts = useSettingsStore((state) => state.browseExportAccounts);
 
   return (
     <SettingsCard
@@ -135,10 +136,10 @@ export function CPAPoolsCard() {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => void exportPool(pool)}
+                      onClick={() => void browseExportAccounts(pool)}
                       disabled={isBusy}
                     >
-                      {exportingPoolId === pool.id ? (
+                      {exportingPoolId === pool.id && isLoadingExportAccounts ? (
                         <LoaderCircle
                           data-icon="inline-start"
                           className="animate-spin"
@@ -254,7 +255,7 @@ export function CPAPoolsCard() {
               点击某个连接的「同步」后，会先读取远程账号列表并展示给前端选择。
             </li>
             <li>确认选择后，后端后台下载完整 CPA JSON 并导入本地号池。</li>
-            <li>点击「回传」会把本地号池按 Codex OAuth JSON 格式上传到 CPA。</li>
+            <li>点击「回传」会先展示本地账号，勾选后再按 Codex OAuth JSON 格式上传到 CPA。</li>
           </ul>
         </SettingsNotice>
       </div>

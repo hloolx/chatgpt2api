@@ -593,6 +593,31 @@ func TestBuildResponsesImagePayloadSendsCompressionOnlyForJPEG(t *testing.T) {
 	}
 }
 
+func TestBuildResponsesImagePayloadDoesNotForceImageToolChoice(t *testing.T) {
+	payload, err := buildResponsesImagePayload(ResponsesImageRequest{
+		Prompt: "生成封面",
+		Model:  "codex-gpt-image-2",
+	})
+	if err != nil {
+		t.Fatalf("buildResponsesImagePayload() error = %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(payload, &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if _, ok := body["tool_choice"]; ok {
+		t.Fatalf("payload should not force tool_choice: %#v", body["tool_choice"])
+	}
+	tools := body["tools"].([]any)
+	tool := tools[0].(map[string]any)
+	if tool["type"] != "image_generation" {
+		t.Fatalf("tool type = %#v, want image_generation", tool["type"])
+	}
+	if tool["model"] != "gpt-image-2" {
+		t.Fatalf("tool model = %#v, want gpt-image-2", tool["model"])
+	}
+}
+
 func TestShouldTreatOfficialImageEventAsFinalText(t *testing.T) {
 	toolFalse := false
 	toolTrue := true
