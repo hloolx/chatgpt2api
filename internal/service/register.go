@@ -12,6 +12,7 @@ import (
 	"math"
 	mathrand "math/rand"
 	"net/http"
+	"os"
 	"net/http/cookiejar"
 	"net/url"
 	"strconv"
@@ -287,22 +288,13 @@ func newRegisterWorker(service *RegisterService, index int, config map[string]an
 }
 
 func registerHTTPClient(proxy string, timeout time.Duration, deviceID string) (*http.Client, error) {
+	proxy = strings.TrimSpace(proxy)
+	client := browserHTTPClientForProfile(proxy, "", timeout)
 	jar, err := cookiejar.New(nil)
 	if err != nil {
-		return nil, err
+		return client, nil
 	}
-	transport := transportForProxy("")
-	if strings.TrimSpace(proxy) != "" {
-		parsed, parseErr := url.Parse(proxy)
-		if parseErr != nil {
-			return nil, parseErr
-		}
-		if parsed.Host == "" {
-			return nil, fmt.Errorf("invalid proxy url")
-		}
-		transport = transportForProxyURL(parsed)
-	}
-	client := &http.Client{Timeout: timeout, Transport: transport, Jar: jar}
+	client.Jar = jar
 	authURL, _ := url.Parse(registerAuthBase)
 	if authURL != nil {
 		jar.SetCookies(authURL, []*http.Cookie{
@@ -313,6 +305,13 @@ func registerHTTPClient(proxy string, timeout time.Duration, deviceID string) (*
 	return client, nil
 }
 
+// registerCleanHTTPClient creates an HTTP client with the same proxy/TLS setup
+// as registerHTTPClient but with NO cookies at all (fresh jar).
+// Matching Python: create_session(config["proxy"]) for OAuth token exchange.
+func registerCleanHTTPClient(proxy string, timeout time.Duration) (*http.Client, error) {
+	return browserHTTPClientForProfile(strings.TrimSpace(proxy), "", timeout), nil
+}
+
 func (w *registerWorker) close() {
 	if w.client != nil {
 		w.client.CloseIdleConnections()
@@ -321,7 +320,8 @@ func (w *registerWorker) close() {
 
 func (w *registerWorker) run(ctx context.Context) (map[string]any, error) {
 	w.step("开始创建邮箱")
-	mailbox, err := createRegisterMailbox(w.mail, "")
+	proxy := util.Clean(w.config["proxy"])
+	mailbox, err := createRegisterMailbox(w.mail, proxy, "")
 	if err != nil {
 		return nil, err
 	}
@@ -342,7 +342,7 @@ func (w *registerWorker) run(ctx context.Context) (map[string]any, error) {
 		return nil, err
 	}
 	w.step("开始等待注册验证码")
-	code, err := waitRegisterCode(ctx, w.mail, mailbox)
+	code, err := waitRegisterCode(ctx, w.mail, proxy, mailbox)
 	if err != nil {
 		return nil, err
 	}
@@ -354,6 +354,9 @@ func (w *registerWorker) run(ctx context.Context) (map[string]any, error) {
 		return nil, err
 	}
 	if err := w.createAccount(ctx, firstName+" "+lastName, registerRandomBirthdate()); err != nil {
+		if registerErrorShowsDomainBlocked(err) {
+			w.service.blockMailDomain(email)
+		}
 		return nil, err
 	}
 	tokens, err := w.loginAndExchangeTokens(ctx, email, password, mailbox)
@@ -399,6 +402,23 @@ func registerFailedToCreateAccount(payload map[string]any) bool {
 	return util.Clean(payload["message"]) == "Failed to create account. Please try again."
 }
 
+func registerErrorShowsDomainBlocked(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "unsupported_email") ||
+		strings.Contains(s, "email you provided is not supported")
+}
+
+func emailToDomain(email string) string {
+	parts := strings.SplitN(email, "@", 2)
+	if len(parts) == 2 {
+		return parts[1]
+	}
+	return ""
+}
+
 func (w *registerWorker) platformAuthorize(ctx context.Context, email string) error {
 	w.step("开始 platform authorize")
 	values := registerAuthorizeParams(email, w.deviceID, registerRandomToken(), registerRandomToken(), registerPKCEChallenge())
@@ -431,6 +451,7 @@ func (w *registerWorker) registerUser(ctx context.Context, email, password strin
 	if status != http.StatusOK {
 		if registerFailedToCreateAccount(payload) {
 			w.step("注册失败提示: 邮箱域名很可能因滥用被封禁，请更换邮箱域名")
+			w.service.blockMailDomain(email)
 		}
 		return fmt.Errorf("user_register_http_%d%s", status, registerResponseDetail(payload))
 	}
@@ -487,8 +508,32 @@ func (w *registerWorker) createAccount(ctx context.Context, name, birthdate stri
 
 func (w *registerWorker) loginAndExchangeTokens(ctx context.Context, email, password string, mailbox map[string]any) (map[string]any, error) {
 	w.step("开始独立登录换 token")
+	proxy := util.Clean(w.config["proxy"])
+
+	// Fix 1: Create a brand new HTTP client and device ID for the login phase
+	// (matching Python: login_session = create_session(config["proxy"]), login_device_id = str(uuid.uuid4()))
+	loginDeviceID := util.NewUUID()
+	loginClient, err := registerHTTPClient(proxy, 60*time.Second, loginDeviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer loginClient.CloseIdleConnections()
+
+	// Swap worker's client and deviceID so all helper methods use the login versions
+	origClient := w.client
+	origDeviceID := w.deviceID
+	w.client = loginClient
+	w.deviceID = loginDeviceID
+	// Restore on any error exit
+	defer func() {
+		if w.client == loginClient {
+			w.client = origClient
+			w.deviceID = origDeviceID
+		}
+	}()
+
 	codeVerifier, codeChallenge := generateRegisterPKCE()
-	values := registerAuthorizeParams(email, w.deviceID, registerRandomToken(), registerRandomToken(), codeChallenge)
+	values := registerAuthorizeParams(email, loginDeviceID, registerRandomToken(), registerRandomToken(), codeChallenge)
 	authorizeLogin := func() error {
 		status, _, err := w.request(ctx, http.MethodGet, registerAuthBase+"/api/accounts/authorize?"+values.Encode(), nil, w.navigateHeaders(registerPlatformBase+"/"), true)
 		if err != nil {
@@ -510,6 +555,7 @@ func (w *registerWorker) loginAndExchangeTokens(ctx context.Context, email, pass
 	}
 	if status == http.StatusConflict {
 		w.step("邮箱提交 invalid_state，重新 authorize 后重试")
+		w.clearAuthCookies()
 		if err := authorizeLogin(); err != nil {
 			return nil, err
 		}
@@ -543,7 +589,7 @@ func (w *registerWorker) loginAndExchangeTokens(ctx context.Context, email, pass
 	page := util.StringMap(payload["page"])
 	if util.Clean(page["type"]) == "email_otp_verification" || strings.Contains(continueURL, "email-verification") || strings.Contains(continueURL, "email-otp") {
 		w.step("独立登录需要邮箱验证码")
-		code, waitErr := waitRegisterCode(ctx, w.mail, mailbox)
+		code, waitErr := waitRegisterCode(ctx, w.mail, proxy, mailbox)
 		if waitErr != nil {
 			return nil, waitErr
 		}
@@ -569,6 +615,16 @@ func (w *registerWorker) loginAndExchangeTokens(ctx context.Context, email, pass
 	if code == "" {
 		return nil, fmt.Errorf("token exchange callback code not found")
 	}
+
+	// Fix 2: OAuth token exchange MUST use a clean session with NO cookies
+	// (matching Python: resp = create_session(config["proxy"]).post(...) — BRAND NEW session)
+	cleanClient, err := registerCleanHTTPClient(proxy, 60*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanClient.CloseIdleConnections()
+	w.client = cleanClient
+
 	status, tokenPayload, err := w.requestForm(ctx, registerAuthBase+"/oauth/token", url.Values{
 		"grant_type":    []string{"authorization_code"},
 		"code":          []string{code},
@@ -576,6 +632,11 @@ func (w *registerWorker) loginAndExchangeTokens(ctx context.Context, email, pass
 		"client_id":     []string{registerPlatformOAuthClientID},
 		"code_verifier": []string{codeVerifier},
 	})
+
+	// Restore original client and deviceID
+	w.client = origClient
+	w.deviceID = origDeviceID
+
 	if err != nil {
 		return nil, err
 	}
@@ -650,10 +711,74 @@ func (w *registerWorker) followConsentForCode(ctx context.Context, continueURL s
 		}
 		current = next
 	}
-	return w.selectWorkspaceForConsentCode(ctx, continueURL)
-}
+		if code, fallbackErr := w.consentRedirectFallback(ctx, continueURL); fallbackErr == nil && code != "" {
+			return code, nil
+		}
+		return w.selectWorkspaceForConsentCode(ctx, continueURL)
+	}
 
-func (w *registerWorker) validateOTPCode(ctx context.Context, code string) (map[string]any, error) {
+	func (w *registerWorker) consentRedirectFallback(ctx context.Context, consentURL string) (string, error) {
+		if strings.HasPrefix(consentURL, "/") {
+			consentURL = registerAuthBase + consentURL
+		}
+		// Follow redirects manually and collect response Location headers
+		// (matching Python: for hist in getattr(r, "history", []) or []: loc = str(hist.headers.get("Location") or ""))
+		current := consentURL
+		noRedirect := *w.client
+		noRedirect.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+		var locations []string
+		for i := 0; i < 15; i++ {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, current, nil)
+			if err != nil {
+				return "", err
+			}
+			for key, value := range w.navigateHeaders(current) {
+				req.Header.Set(key, value)
+			}
+			resp, err := noRedirect.Do(req)
+			if err != nil {
+				// Check collected Location headers even on error (matching Python's history check)
+				for _, loc := range locations {
+					if code := registerOAuthCode(loc); code != "" {
+						return code, nil
+					}
+				}
+				return "", err
+			}
+			resp.Body.Close()
+			// Check final response URL for code (matching Python's final_url check)
+			if code := registerOAuthCode(resp.Request.URL.String()); code != "" {
+				return code, nil
+			}
+			// Collect response Location header (matching Python's hist.headers.get("Location"))
+			location := strings.TrimSpace(resp.Header.Get("Location"))
+			if location != "" {
+				locations = append(locations, location)
+				if code := registerOAuthCode(location); code != "" {
+					return code, nil
+				}
+			}
+			if location == "" || (resp.StatusCode < 300 || resp.StatusCode >= 400) {
+				break
+			}
+			next, err := resolveRegisterLocation(current, location)
+			if err != nil {
+				return "", err
+			}
+			current = next
+		}
+		// After following redirects, check all collected Location headers for code (matching Python's history check)
+		for _, loc := range locations {
+			if code := registerOAuthCode(loc); code != "" {
+				return code, nil
+			}
+		}
+		return "", nil
+	}
+
+	func (w *registerWorker) validateOTPCode(ctx context.Context, code string) (map[string]any, error) {
 	status, payload, err := w.request(ctx, http.MethodPost, registerAuthBase+"/api/accounts/email-otp/validate", map[string]any{"code": code}, w.jsonHeaders(registerAuthBase+"/email-verification"), true)
 	if err != nil {
 		return nil, err
@@ -769,6 +894,25 @@ func (w *registerWorker) authSessionWorkspaceID() string {
 		return ""
 	}
 	return util.Clean(workspaces[0]["id"])
+}
+
+func (w *registerWorker) clearAuthCookies() {
+	if w.client == nil {
+		return
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return
+	}
+	authURL, err := url.Parse(registerAuthBase)
+	if err != nil {
+		return
+	}
+	jar.SetCookies(authURL, []*http.Cookie{
+		{Name: "oai-did", Value: w.deviceID, Domain: ".auth.openai.com", Path: "/"},
+		{Name: "oai-did", Value: w.deviceID, Domain: "auth.openai.com", Path: "/"},
+	})
+	w.client.Jar = jar
 }
 
 func (w *registerWorker) buildSentinelToken(ctx context.Context, flow string) (string, error) {
@@ -894,9 +1038,7 @@ func (w *registerWorker) requestDetailed(ctx context.Context, method, target str
 		}
 		defer resp.Body.Close()
 		payloadMap := map[string]any{}
-		if strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
-			_ = util.DecodeJSON(resp.Body, &payloadMap)
-		} else {
+		if err := util.DecodeJSON(resp.Body, &payloadMap); err != nil {
 			data, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 			if len(data) > 0 {
 				payloadMap["body"] = string(data)
@@ -1009,7 +1151,7 @@ func registerDefaultConfig() map[string]any {
 	stats := registerZeroStats(64, map[string]any{"current_quota": 0, "current_available": 0})
 	return map[string]any{
 		"mail": map[string]any{
-			"request_timeout": 15,
+			"request_timeout": 30,
 			"wait_timeout":    30,
 			"wait_interval":   3,
 			"providers":       []map[string]any{},
@@ -1077,7 +1219,7 @@ func normalizeRegisterConfig(raw map[string]any) map[string]any {
 
 func normalizeRegisterMailConfig(raw map[string]any) map[string]any {
 	cfg := map[string]any{
-		"request_timeout": maxInt(1, util.ToInt(raw["request_timeout"], 15)),
+		"request_timeout": maxInt(1, util.ToInt(raw["request_timeout"], 30)),
 		"wait_timeout":    maxInt(1, util.ToInt(raw["wait_timeout"], 30)),
 		"wait_interval":   maxInt(1, util.ToInt(raw["wait_interval"], 3)),
 		"user_agent":      firstNonEmpty(util.Clean(raw["user_agent"]), registerUserAgent),
@@ -1094,6 +1236,30 @@ func normalizeRegisterMailConfig(raw map[string]any) map[string]any {
 		out = append(out, item)
 	}
 	cfg["providers"] = out
+	// 从环境变量注入 HLOOL Mail API 配置
+	if apiKey, ok := os.LookupEnv("CHATGPT2API_HLOOL_MAIL_API_KEY"); ok && strings.TrimSpace(apiKey) != "" {
+		hasHLOOL := false
+		for _, p := range out {
+			if util.Clean(p["type"]) == "hlool_mail" {
+				hasHLOOL = true
+				break
+			}
+		}
+		if !hasHLOOL {
+			entry := map[string]any{
+				"type":    "hlool_mail",
+				"enable":  true,
+				"api_key": strings.TrimSpace(apiKey),
+			}
+			if apiBase, ok := os.LookupEnv("CHATGPT2API_HLOOL_MAIL_API_BASE"); ok && strings.TrimSpace(apiBase) != "" {
+				entry["api_base"] = strings.TrimSpace(apiBase)
+			}
+			if domain, ok := os.LookupEnv("CHATGPT2API_HLOOL_MAIL_DOMAIN"); ok && strings.TrimSpace(domain) != "" {
+				entry["domain"] = strings.Split(strings.TrimSpace(domain), ",")
+			}
+			cfg["providers"] = append(out, entry)
+		}
+	}
 	return cfg
 }
 
@@ -1214,6 +1380,42 @@ func (s *RegisterService) poolMetrics() map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.poolMetricsLocked()
+}
+
+func (s *RegisterService) blockMailDomain(email string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.blockMailDomainLocked(email)
+}
+
+// blockMailDomainLocked blocks an email domain from future registration attempts.
+// Must be called with s.mu held.
+func (s *RegisterService) blockMailDomainLocked(email string) {
+	domain := emailToDomain(email)
+	if domain == "" {
+		return
+	}
+	mail := util.StringMap(s.config["mail"])
+	providers := util.AsMapSlice(mail["providers"])
+	for _, p := range providers {
+		entryDomains := util.AsStringSlice(p["domain"])
+		for _, d := range entryDomains {
+			if d == domain {
+				blocked := util.AsStringSlice(p["blocked_domains"])
+				// Check if already blocked
+				for _, b := range blocked {
+					if b == domain {
+						return
+					}
+				}
+				blocked = append(blocked, domain)
+				p["blocked_domains"] = blocked
+				s.saveLocked()
+				s.appendLogLocked(fmt.Sprintf("邮箱域名 %s 被 OpenAI 拒绝，已自动加入黑名单，后续注册将跳过此域名", domain), "yellow")
+				return
+			}
+		}
+	}
 }
 
 func (s *RegisterService) bumpStats(updates map[string]any) {
@@ -1454,9 +1656,6 @@ func registerSentinelHeaders() map[string]string {
 		"sec-ch-ua":          registerSecCHUA,
 		"sec-ch-ua-mobile":   "?0",
 		"sec-ch-ua-platform": `"Windows"`,
-		"sec-fetch-dest":     "empty",
-		"sec-fetch-mode":     "cors",
-		"sec-fetch-site":     "same-origin",
 	}
 }
 

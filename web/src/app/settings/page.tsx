@@ -15,6 +15,7 @@ import { LinuxDoLoginCard } from "./components/linuxdo-login-card";
 import { LogGovernanceCard } from "./components/log-governance-card";
 import { LoginPageImageCard } from "./components/login-page-image-card";
 import { SettingsHeader } from "./components/settings-header";
+import { CloudStorageCard } from "./components/cloud-storage-card";
 import { Sub2APIConnections } from "./components/sub2api-connections";
 import { VersionUpdateCard } from "./components/version-update-card";
 import { useSettingsStore } from "./store";
@@ -91,6 +92,9 @@ function AdminSettingsPageContent({
         </SettingsMasonryItem>
         <SettingsMasonryItem>
           <Sub2APIConnections />
+        </SettingsMasonryItem>
+        <SettingsMasonryItem>
+          <CloudStorageCard />
         </SettingsMasonryItem>
       </section>
       <CPAPoolDialog />

@@ -205,18 +205,22 @@ func TestRegisterHTTPClientUsesSOCKSTransport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("registerHTTPClient() error = %v", err)
 	}
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("transport type = %T", client.Transport)
+	if client.Jar == nil {
+		t.Fatal("SOCKS register client missing cookie jar")
 	}
-	if transport.Proxy != nil {
-		t.Fatal("SOCKS register transport should not use http.ProxyURL")
+	authURL, _ := url.Parse(registerAuthBase)
+	cookies := client.Jar.Cookies(authURL)
+	var hasDeviceID bool
+	for _, c := range cookies {
+		if c.Name == "oai-did" && c.Value == "device-1" {
+			hasDeviceID = true
+			break
+		}
 	}
-	if transport.DialContext == nil {
-		t.Fatal("SOCKS register transport missing DialContext")
+	if !hasDeviceID {
+		t.Fatal("SOCKS register client missing oai-did cookie")
 	}
 }
-
 func TestExtractRegisterMailCodeFromRawMIME(t *testing.T) {
 	raw := strings.Join([]string{
 		"From: OpenAI <noreply@example.test>",

@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"chatgpt2api/internal/cloudstorage"
 	"chatgpt2api/internal/config"
 	"chatgpt2api/internal/protocol"
 	"chatgpt2api/internal/service"
@@ -39,25 +40,26 @@ const (
 )
 
 type App struct {
-	config     *config.Store
-	auth       *service.AuthService
-	accounts   *service.AccountService
-	billing    *service.BillingService
-	logs       *service.LogService
-	logger     *service.Logger
-	proxy      *service.ProxyService
-	engine     *protocol.Engine
-	images     *service.ImageService
-	tasks      *service.ImageTaskService
-	announce   *service.AnnouncementService
-	prompts    *service.PromptFavoriteService
-	cpa        *service.CPAConfig
-	cpaImport  *service.CPAImportService
-	sub2       *service.Sub2APIConfig
-	sub2Import *service.Sub2APIService
-	register   *service.RegisterService
-	update     *service.UpdateService
-	cancel     context.CancelFunc
+	config       *config.Store
+	auth         *service.AuthService
+	accounts     *service.AccountService
+	billing      *service.BillingService
+	logs         *service.LogService
+	logger       *service.Logger
+	proxy        *service.ProxyService
+	engine       *protocol.Engine
+	images       *service.ImageService
+	tasks        *service.ImageTaskService
+	announce     *service.AnnouncementService
+	prompts      *service.PromptFavoriteService
+	cpa          *service.CPAConfig
+	cpaImport    *service.CPAImportService
+	sub2         *service.Sub2APIConfig
+	sub2Import   *service.Sub2APIService
+	register     *service.RegisterService
+	update       *service.UpdateService
+	cloudStorage *service.CloudStorageService
+	cancel       context.CancelFunc
 }
 
 func NewApp() (*App, error) {
@@ -93,8 +95,9 @@ func NewApp() (*App, error) {
 		logger.Warning("bootstrap admin password generated", "username", bootstrap.Username)
 	}
 	documentStore, _ := storageBackend.(storage.JSONDocumentBackend)
-	engine := &protocol.Engine{Accounts: accounts, Config: cfg, Storage: documentStore, Proxy: proxy, Logger: logger}
-	app := &App{config: cfg, auth: auth, accounts: accounts, billing: billing, logs: logs, logger: logger, proxy: proxy, engine: engine, images: service.NewImageService(cfg, storageBackend), announce: service.NewAnnouncementService(storageBackend), prompts: service.NewPromptFavoriteService(storageBackend), cpa: service.NewCPAConfig(storageBackend), sub2: service.NewSub2APIConfig(storageBackend), update: newUpdateService(cfg), cancel: cancel}
+	cloudStorage := service.NewCloudStorageService(cfg, nil, storageBackend)
+	engine := &protocol.Engine{Accounts: accounts, Config: cfg, Storage: documentStore, Proxy: proxy, Logger: logger, CloudStorage: cloudStorage}
+	app := &App{config: cfg, auth: auth, accounts: accounts, billing: billing, logs: logs, logger: logger, proxy: proxy, engine: engine, images: service.NewImageService(cfg, storageBackend), announce: service.NewAnnouncementService(storageBackend), prompts: service.NewPromptFavoriteService(storageBackend), cpa: service.NewCPAConfig(storageBackend), sub2: service.NewSub2APIConfig(storageBackend), update: newUpdateService(cfg), cloudStorage: cloudStorage, cancel: cancel}
 	app.cpaImport = service.NewCPAImportService(app.cpa, accounts, proxy)
 	app.sub2Import = service.NewSub2APIService(app.sub2, accounts)
 	app.register = service.NewRegisterService(accounts, storageBackend)
@@ -147,6 +150,9 @@ func (a *App) Close() {
 	}
 	if a.logger != nil {
 		_ = a.logger.Close()
+	}
+	if a.cloudStorage != nil {
+		_ = a.cloudStorage.Close()
 	}
 	if a.config != nil {
 		if backend, err := a.config.StorageBackend(); err == nil {
@@ -831,7 +837,74 @@ func (a *App) handleImageFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+
+	// Try cloud-backed serving first
+	if a.cloudStorage != nil && a.cloudStorage.Enabled() {
+		if a.serveCloudImage(w, r, rel) {
+			return
+		}
+	}
+
 	http.ServeFile(w, r, ref.Path)
+}
+
+func (a *App) serveCloudImage(w http.ResponseWriter, r *http.Request, rel string) bool {
+	record, err := a.cloudStorage.GetRecord(r.Context(), rel)
+	if err != nil || record == nil {
+		return false
+	}
+
+	// Fetch from cloud URL
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, record.CloudURL, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+
+	resp, err := a.cloudStorage.GetHTTPClient().Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false
+	}
+
+	// Read the encrypted+GIF-wrapped data
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false
+	}
+
+	// Strip GIF header
+	if len(body) <= record.HeadSize {
+		return false
+	}
+	encryptedData := body[record.HeadSize:]
+
+	// Decode the AES key from base62
+	aesKey := cloudstorage.Decode(record.EncryptKey)
+	if aesKey == nil {
+		return false
+	}
+
+	// AES-GCM decrypt
+	imageData, err := cloudstorage.DecryptAES(encryptedData, aesKey)
+	if err != nil {
+		return false
+	}
+
+	// Serve the decrypted image
+	if record.ContentType != "" {
+		w.Header().Set("Content-Type", record.ContentType)
+	}
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	http.ServeContent(w, r, "", time.Now(), bytes.NewReader(imageData))
+	return true
 }
 
 func (a *App) handleImageReferenceFile(w http.ResponseWriter, r *http.Request) {

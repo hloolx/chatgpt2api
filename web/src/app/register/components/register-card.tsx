@@ -1,6 +1,7 @@
 "use client";
 
-import { AlertTriangle, LoaderCircle, Plus, Play, RotateCcw, Save, Square, Trash2, UserPlus } from "lucide-react";
+import { useState, useCallback } from "react";
+import { AlertTriangle, Download, LoaderCircle, Mail, MailOpen, Plus, Play, RefreshCw, RotateCcw, Save, Square, Trash2, UserPlus } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -8,7 +9,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { toast } from "sonner";
 
+import { hlooLMailDomains } from "@/lib/api";
 import { useSettingsStore } from "../../settings/store";
 
 export function RegisterCard() {
@@ -29,6 +32,43 @@ export function RegisterCard() {
   const save = useSettingsStore((state) => state.saveRegister);
   const toggle = useSettingsStore((state) => state.toggleRegister);
   const reset = useSettingsStore((state) => state.resetRegister);
+
+  // HLOOL Mail domain fetching state — must be before any early return (Rules of Hooks)
+  const [hloolDomains, setHloolDomains] = useState<Record<number, { loading: boolean; publicDomains: string[]; privateDomains: string[] }>>({});
+
+  const fetchHloolDomains = useCallback(async (index: number) => {
+    // read providers fresh from store inside callback to avoid stale closure
+    const currentProviders = (useSettingsStore.getState().registerConfig?.mail?.providers || []) as Array<Record<string, unknown>>;
+    const provider = currentProviders[index];
+    if (!provider) return;
+    const apiKey = String(provider.api_key || "");
+    const apiBase = String(provider.api_base || "");
+    if (!apiKey) {
+      toast.error("请先填写 API Key");
+      return;
+    }
+    setHloolDomains((prev) => ({ ...prev, [index]: { loading: true, publicDomains: [], privateDomains: [] } }));
+    try {
+      const res = await hlooLMailDomains(apiKey, apiBase || undefined);
+      if (res.success && res.data) {
+        const normalize = (list: unknown[]): string[] =>
+          list.map((item) => (typeof item === "string" ? item : String((item as Record<string, unknown>).domain || ""))).filter(Boolean);
+        const pub = normalize((res.data.public_domains as unknown[]) || (res.data.domains as unknown[]) || []);
+        const priv = normalize((res.data.private_domains as unknown[]) || []);
+        setHloolDomains((prev) => ({
+          ...prev,
+          [index]: { loading: false, publicDomains: pub, privateDomains: priv },
+        }));
+        toast.success(`获取到 ${pub.length + priv.length} 个域名`);
+      } else {
+        setHloolDomains((prev) => ({ ...prev, [index]: { loading: false, publicDomains: [], privateDomains: [] } }));
+        toast.error(res.error || "获取域名失败");
+      }
+    } catch {
+      setHloolDomains((prev) => ({ ...prev, [index]: { loading: false, publicDomains: [], privateDomains: [] } }));
+      toast.error("网络请求失败");
+    }
+  }, []);
 
   if (isLoading) {
     return (
@@ -54,7 +94,17 @@ export function RegisterCard() {
       ...(type === "moemail" ? { api_base: "", api_key: "", domain: [], expiry_time: 0 } : {}),
       ...(type === "inbucket" ? { api_base: "", domain: [], random_subdomain: true } : {}),
       ...(type === "yyds_mail" ? { api_base: "https://maliapi.215.im/v1", api_key: "", domain: [], subdomain: "", wildcard: false } : {}),
+      ...(type === "hlool_mail" ? { api_base: "https://email.hlool.cc", api_key: "", domain: [] } : {}),
     });
+  };
+
+  const toggleHloolDomain = (index: number, domain: string) => {
+    const provider = providers[index];
+    const currentDomains: string[] = Array.isArray(provider.domain) ? provider.domain : [];
+    const newDomains = currentDomains.includes(domain)
+      ? currentDomains.filter((d) => d !== domain)
+      : [...currentDomains, domain];
+    updateProvider(index, { domain: newDomains });
   };
 
   return (
@@ -179,10 +229,11 @@ export function RegisterCard() {
                             <SelectItem value="moemail">moemail</SelectItem>
                             <SelectItem value="inbucket">inbucket</SelectItem>
                             <SelectItem value="yyds_mail">yyds_mail</SelectItem>
+                            <SelectItem value="hlool_mail">hlool_mail</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
-                      {type === "cloudflare_temp_email" || type === "moemail" || type === "inbucket" || type === "yyds_mail" ? (
+                      {type === "cloudflare_temp_email" || type === "moemail" || type === "inbucket" || type === "yyds_mail" || type === "hlool_mail" ? (
                         <div className="space-y-2">
                           <label className="text-sm text-stone-700">API Base</label>
                           <Input value={String(provider.api_base || "")} onChange={(event) => updateProvider(index, { api_base: event.target.value })} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} />
@@ -202,7 +253,7 @@ export function RegisterCard() {
                           启用随机子域名
                         </label>
                       ) : null}
-                      {type === "tempmail_lol" || type === "duckmail" || type === "gptmail" || type === "moemail" || type === "yyds_mail" ? (
+                      {type === "tempmail_lol" || type === "duckmail" || type === "gptmail" || type === "moemail" || type === "yyds_mail" || type === "hlool_mail" ? (
                         <div className="space-y-2">
                           <label className="text-sm text-stone-700">API Key</label>
                           <Input value={String(provider.api_key || "")} onChange={(event) => updateProvider(index, { api_key: event.target.value })} className="h-10 rounded-xl border-stone-200 bg-white" disabled={config.enabled} />
@@ -238,6 +289,85 @@ export function RegisterCard() {
                       <div className="space-y-2">
                         <label className="text-sm text-stone-700">{type === "inbucket" ? "基础域名列表" : "Domain"}</label>
                         <Textarea value={domains} onChange={(event) => updateProvider(index, { domain: event.target.value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean) })} placeholder={domainPlaceholder} className="min-h-20 rounded-xl border-stone-200 bg-white font-mono text-xs" disabled={config.enabled} />
+                      </div>
+                    ) : null}
+                    {type === "hlool_mail" ? (
+                      <div className="space-y-3 rounded-xl border border-stone-200 bg-stone-50 p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm font-medium text-stone-700">可用域名</span>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-8 rounded-lg border-stone-300 bg-white px-3 text-xs"
+                            onClick={() => fetchHloolDomains(index)}
+                            disabled={config.enabled || hloolDomains[index]?.loading}
+                          >
+                            {hloolDomains[index]?.loading ? (
+                              <LoaderCircle className="size-3 animate-spin" />
+                            ) : (
+                              <Download className="size-3" />
+                            )}
+                            获取域名
+                          </Button>
+                        </div>
+                        {hloolDomains[index] && !hloolDomains[index].loading ? (
+                          <>
+                            {hloolDomains[index].publicDomains.length > 0 ? (
+                              <div>
+                                <p className="mb-1.5 text-xs text-stone-500">公共域名</p>
+                                <div className="max-h-32 space-y-1 overflow-y-auto">
+                                  {hloolDomains[index].publicDomains.map((d) => {
+                                    const selected = Array.isArray(provider.domain) ? provider.domain.includes(d) : false;
+                                    return (
+                                      <label key={d} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1 text-xs hover:bg-white">
+                                        <Checkbox checked={selected} onCheckedChange={() => toggleHloolDomain(index, d)} disabled={config.enabled} />
+                                        {d}
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            ) : null}
+                            {hloolDomains[index].privateDomains.length > 0 ? (
+                              <div>
+                                <p className="mb-1.5 text-xs text-stone-500">
+                                  私有域名
+                                  <Badge variant="secondary" className="ml-1.5 rounded-md px-1.5 py-0 text-[10px]">已认证</Badge>
+                                </p>
+                                <div className="max-h-32 space-y-1 overflow-y-auto">
+                                  {hloolDomains[index].privateDomains.map((d) => {
+                                    const selected = Array.isArray(provider.domain) ? provider.domain.includes(d) : false;
+                                    return (
+                                      <label key={d} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1 text-xs hover:bg-white">
+                                        <Checkbox checked={selected} onCheckedChange={() => toggleHloolDomain(index, d)} disabled={config.enabled} />
+                                        {d}
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            ) : null}
+                            {hloolDomains[index].publicDomains.length === 0 && hloolDomains[index].privateDomains.length === 0 ? (
+                              <p className="text-xs text-stone-400">未获取到可用域名</p>
+                            ) : null}
+                          </>
+                        ) : hloolDomains[index]?.loading ? (
+                          <p className="text-xs text-stone-400">正在获取域名列表...</p>
+                        ) : (
+                          <p className="text-xs text-stone-400">点击"获取域名"查看可用域名并勾选</p>
+                        )}
+                        {/* Also keep a textarea for manually editing domains */}
+                        <details className="text-xs">
+                          <summary className="cursor-pointer text-stone-500">手动编辑域名列表</summary>
+                          <Textarea
+                            value={domains}
+                            onChange={(event) => updateProvider(index, { domain: event.target.value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean) })}
+                            placeholder="每行一个域名"
+                            className="mt-2 min-h-16 rounded-xl border-stone-200 bg-white font-mono text-xs"
+                            disabled={config.enabled}
+                          />
+                        </details>
                       </div>
                     ) : null}
                   </div>

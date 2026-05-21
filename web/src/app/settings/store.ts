@@ -97,6 +97,8 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
     login_page_image_zoom: loginImageTransform.zoom,
     login_page_image_position_x: loginImageTransform.positionX,
     login_page_image_position_y: loginImageTransform.positionY,
+    cloud_storage_enabled: Boolean(config.cloud_storage_enabled),
+    cloud_storage_uploader: typeof config.cloud_storage_uploader === "string" ? config.cloud_storage_uploader : "auto",
   };
 }
 
@@ -176,6 +178,8 @@ type SettingsStore = {
   setProxy: (value: string) => void;
   setBaseUrl: (value: string) => void;
   setRegistrationEnabled: (value: boolean) => void;
+  setCloudStorageEnabled: (value: boolean) => void;
+  setCloudStorageUploader: (value: string) => void;
   setLinuxDoEnabled: (value: boolean) => void;
   setLinuxDoClientId: (value: string) => void;
   setLinuxDoClientSecret: (value: string) => void;
@@ -477,6 +481,20 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   setUpdateGitHubToken: (value) => {
     set((state) => state.config ? { config: { ...state.config, update_github_token: value } } : {});
+  },
+
+  setCloudStorageEnabled: (value) => {
+    set((state) => {
+      if (!state.config) return state;
+      return { config: { ...state.config, cloud_storage_enabled: value } };
+    });
+  },
+
+  setCloudStorageUploader: (value) => {
+    set((state) => {
+      if (!state.config) return state;
+      return { config: { ...state.config, cloud_storage_uploader: value } };
+    });
   },
 
   setLoginPageImageUrl: (value) => {

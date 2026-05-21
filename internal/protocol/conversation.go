@@ -36,11 +36,12 @@ type ImageConfig interface {
 }
 
 type Engine struct {
-	Accounts *service.AccountService
-	Config   ImageConfig
-	Storage  storage.JSONDocumentBackend
-	Proxy    *service.ProxyService
-	Logger   *service.Logger
+	Accounts     *service.AccountService
+	Config       ImageConfig
+	Storage      storage.JSONDocumentBackend
+	Proxy        *service.ProxyService
+	Logger       *service.Logger
+	CloudStorage *service.CloudStorageService
 
 	ListModelsFunc         func(context.Context) (map[string]any, error)
 	StreamImageOutputsFunc func(context.Context, *backend.Client, ConversationRequest, int, int) (<-chan ImageOutput, <-chan error)
@@ -1092,6 +1093,27 @@ func (e *Engine) SaveImageBytesForOwnerWithFormat(imageData []byte, baseURL, own
 	_ = os.MkdirAll(filepath.Dir(filePath), 0o755)
 	_ = os.WriteFile(filePath, imageData, 0o644)
 	e.writeImageOwnerMetadata(rel, ownerID, ownerName)
+
+	// Async upload to cloud storage (best-effort, does not block the response).
+	if e.CloudStorage != nil && e.CloudStorage.Enabled() {
+		go func(data []byte, fname string) {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			record, err := e.CloudStorage.UploadImage(ctx, data, fname)
+			if err != nil {
+				if e.Logger != nil {
+					e.Logger.Warning("cloud upload failed", "filename", fname, "error", err)
+				}
+				return
+			}
+			if err := e.CloudStorage.SaveRecord(ctx, rel, record); err != nil {
+				if e.Logger != nil {
+					e.Logger.Warning("cloud record save failed", "filename", fname, "error", err)
+				}
+			}
+		}(imageData, filename)
+	}
+
 	if baseURL == "" {
 		baseURL = e.Config.BaseURL()
 	}

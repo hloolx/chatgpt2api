@@ -91,8 +91,13 @@ type registerYYDSMailProvider struct {
 	entry map[string]any
 }
 
-func createRegisterMailbox(mailConfig map[string]any, username string) (map[string]any, error) {
-	provider, err := createRegisterMailProvider(mailConfig, "", "")
+type registerHLOOLMailProvider struct {
+	registerHTTPMailProvider
+	entry map[string]any
+}
+
+func createRegisterMailbox(mailConfig map[string]any, proxy, username string) (map[string]any, error) {
+	provider, err := createRegisterMailProvider(mailConfig, proxy, "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -100,8 +105,8 @@ func createRegisterMailbox(mailConfig map[string]any, username string) (map[stri
 	return provider.CreateMailbox(username)
 }
 
-func waitRegisterCode(ctx context.Context, mailConfig map[string]any, mailbox map[string]any) (string, error) {
-	provider, err := createRegisterMailProvider(mailConfig, util.Clean(mailbox["provider"]), util.Clean(mailbox["provider_ref"]))
+func waitRegisterCode(ctx context.Context, mailConfig map[string]any, proxy string, mailbox map[string]any) (string, error) {
+	provider, err := createRegisterMailProvider(mailConfig, proxy, util.Clean(mailbox["provider"]), util.Clean(mailbox["provider_ref"]))
 	if err != nil {
 		return "", err
 	}
@@ -129,13 +134,13 @@ func waitRegisterCode(ctx context.Context, mailConfig map[string]any, mailbox ma
 	}
 }
 
-func createRegisterMailProvider(mailConfig map[string]any, providerName, providerRef string) (registerMailboxProvider, error) {
+func createRegisterMailProvider(mailConfig map[string]any, proxy, providerName, providerRef string) (registerMailboxProvider, error) {
 	entry, err := selectRegisterMailEntry(mailConfig, providerName, providerRef)
 	if err != nil {
 		return nil, err
 	}
 	conf := registerMailSettingsFromConfig(mailConfig)
-	client := registerMailHTTPClient(conf.RequestTimeout)
+	client := registerMailHTTPClient(conf.RequestTimeout, proxy)
 	base := registerHTTPMailProvider{client: client, conf: conf}
 	switch util.Clean(entry["type"]) {
 	case "cloudflare_temp_email":
@@ -152,6 +157,8 @@ func createRegisterMailProvider(mailConfig map[string]any, providerName, provide
 		return &registerInbucketMailProvider{registerHTTPMailProvider: base, entry: entry}, nil
 	case "yyds_mail":
 		return &registerYYDSMailProvider{registerHTTPMailProvider: base, entry: entry}, nil
+	case "hlool_mail":
+		return &registerHLOOLMailProvider{registerHTTPMailProvider: base, entry: entry}, nil
 	default:
 		return nil, fmt.Errorf("unsupported mail.provider: %s", util.Clean(entry["type"]))
 	}
@@ -159,25 +166,32 @@ func createRegisterMailProvider(mailConfig map[string]any, providerName, provide
 
 func registerMailSettingsFromConfig(mailConfig map[string]any) registerMailSettings {
 	return registerMailSettings{
-		RequestTimeout: time.Duration(maxInt(1, util.ToInt(mailConfig["request_timeout"], 15))) * time.Second,
+		RequestTimeout: time.Duration(maxInt(1, util.ToInt(mailConfig["request_timeout"], 30))) * time.Second,
 		WaitTimeout:    time.Duration(maxInt(1, util.ToInt(mailConfig["wait_timeout"], 30))) * time.Second,
 		WaitInterval:   time.Duration(maxInt(1, util.ToInt(mailConfig["wait_interval"], 3))) * time.Second,
 		UserAgent:      firstNonEmpty(util.Clean(mailConfig["user_agent"]), "Mozilla/5.0"),
 	}
 }
 
-func registerMailHTTPClient(timeout time.Duration) *http.Client {
+func registerMailHTTPClient(timeout time.Duration, proxy string) *http.Client {
 	if timeout <= 0 {
-		timeout = 15 * time.Second
+		timeout = 30 * time.Second
+	}
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		TLSClientConfig: &tls.Config{
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: true,
+		},
+	}
+	if proxy = strings.TrimSpace(proxy); proxy != "" {
+		if proxyURL, err := url.Parse(proxy); err == nil && proxyURL.Host != "" {
+			transport.Proxy = http.ProxyURL(proxyURL)
+		}
 	}
 	return &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			TLSClientConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12,
-			},
-		},
+		Timeout:   timeout,
+		Transport: transport,
 	}
 }
 
@@ -560,15 +574,21 @@ func registerRandomSubdomainLabel() string {
 	return randomAlphaNum(4 + rand.Intn(7))
 }
 
-func nextRegisterDomain(domains []string) (string, error) {
+func nextRegisterDomain(domains []string, blocked ...string) (string, error) {
+	blockedSet := make(map[string]bool, len(blocked))
+	for _, d := range blocked {
+		if d = strings.TrimSpace(d); d != "" {
+			blockedSet[d] = true
+		}
+	}
 	filtered := make([]string, 0, len(domains))
 	for _, domain := range domains {
-		if item := strings.TrimSpace(domain); item != "" {
+		if item := strings.TrimSpace(domain); item != "" && !blockedSet[item] {
 			filtered = append(filtered, item)
 		}
 	}
 	if len(filtered) == 0 {
-		return "", fmt.Errorf("mail domain is required")
+		return "", fmt.Errorf("all mail domains are blocked or empty")
 	}
 	if len(filtered) == 1 {
 		return filtered[0], nil
@@ -605,7 +625,7 @@ func (p *registerHTTPMailProvider) Close() {
 func (p *registerCloudflareTempMailProvider) CreateMailbox(username string) (map[string]any, error) {
 	apiBase := strings.TrimRight(util.Clean(p.entry["api_base"]), "/")
 	adminPassword := util.Clean(p.entry["admin_password"])
-	domain, err := nextRegisterDomain(util.AsStringSlice(p.entry["domain"]))
+	domain, err := nextRegisterDomain(util.AsStringSlice(p.entry["domain"]), util.AsStringSlice(p.entry["blocked_domains"])...)
 	if err != nil {
 		return nil, err
 	}
@@ -897,7 +917,7 @@ func (p *registerMoEmailProvider) CreateMailbox(username string) (map[string]any
 	if apiBase == "" {
 		return nil, fmt.Errorf("moemail api_base is required")
 	}
-	domain, err := nextRegisterDomain(util.AsStringSlice(p.entry["domain"]))
+	domain, err := nextRegisterDomain(util.AsStringSlice(p.entry["domain"]), util.AsStringSlice(p.entry["blocked_domains"])...)
 	if err != nil {
 		return nil, err
 	}
@@ -989,7 +1009,7 @@ func (p *registerInbucketMailProvider) CreateMailbox(username string) (map[strin
 	if apiBase == "" {
 		return nil, fmt.Errorf("inbucket api_base is required")
 	}
-	baseDomain, err := nextRegisterDomain(util.AsStringSlice(p.entry["domain"]))
+	baseDomain, err := nextRegisterDomain(util.AsStringSlice(p.entry["domain"]), util.AsStringSlice(p.entry["blocked_domains"])...)
 	if err != nil {
 		return nil, err
 	}
@@ -1088,7 +1108,8 @@ func registerInbucketMailboxName(address string) string {
 func (p *registerYYDSMailProvider) CreateMailbox(username string) (map[string]any, error) {
 	payload := map[string]any{"localPart": firstNonEmpty(strings.TrimSpace(username), registerRandomMailboxName())}
 	if domains := util.AsStringSlice(p.entry["domain"]); len(domains) > 0 {
-		domain, err := nextRegisterDomain(domains)
+		blocked := util.AsStringSlice(p.entry["blocked_domains"])
+		domain, err := nextRegisterDomain(domains, blocked...)
 		if err != nil {
 			return nil, err
 		}
@@ -1195,6 +1216,122 @@ func (p *registerYYDSMailProvider) request(method, path, token string, query map
 		}
 	}
 	return data, nil
+}
+
+func (p *registerHLOOLMailProvider) CreateMailbox(username string) (map[string]any, error) {
+	apiBase := strings.TrimRight(firstNonEmpty(util.Clean(p.entry["api_base"]), "https://email.hlool.cc"), "/")
+	payload := map[string]any{}
+	if username = strings.TrimSpace(username); username != "" {
+		payload["prefix"] = username
+	}
+	if domains := util.AsStringSlice(p.entry["domain"]); len(domains) > 0 {
+		blocked := util.AsStringSlice(p.entry["blocked_domains"])
+		domain, err := nextRegisterDomain(domains, blocked...)
+		if err != nil {
+			return nil, err
+		}
+		payload["domain"] = domain
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(1<<(attempt-1)) * time.Second) // 1s, 2s
+		}
+		data, err := registerMailRequestAny(p.client, http.MethodPost, apiBase+"/api/generate-email", map[string]string{
+			"X-API-Key":    util.Clean(p.entry["api_key"]),
+			"User-Agent":   p.conf.UserAgent,
+			"Accept":       "application/json",
+			"Content-Type": "application/json",
+		}, nil, payload, http.StatusOK, http.StatusCreated)
+		if err != nil {
+			lastErr = err
+			if !isHloolRetryable(err) {
+				break
+			}
+			continue
+		}
+		body, ok := data.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("hlool_mail unexpected response type")
+		}
+		if success, exists := body["success"]; exists && !util.ToBool(success) {
+			return nil, fmt.Errorf("hlool_mail: %s", firstNonEmpty(util.Clean(body["error"]), "unknown error"))
+		}
+		payloadMap := util.StringMap(firstNonNil(body["data"], body))
+		address := util.Clean(payloadMap["email"])
+		if address == "" {
+			return nil, fmt.Errorf("hlool_mail response missing email")
+		}
+		return map[string]any{"provider": "hlool_mail", "provider_ref": p.entry["provider_ref"], "address": address}, nil
+	}
+	return nil, lastErr
+}
+
+func isHloolRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "forcibly closed") ||
+		strings.Contains(s, "connection reset") ||
+		strings.Contains(s, "HTTP 429") ||
+		strings.Contains(s, "HTTP 502") ||
+		strings.Contains(s, "HTTP 503") ||
+		strings.Contains(s, "HTTP 504") ||
+		strings.Contains(s, "i/o timeout") ||
+		strings.Contains(s, "EOF")
+}
+
+func (p *registerHLOOLMailProvider) FetchLatestMessage(mailbox map[string]any) (map[string]any, error) {
+	apiBase := strings.TrimRight(firstNonEmpty(util.Clean(p.entry["api_base"]), "https://email.hlool.cc"), "/")
+
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(1<<(attempt-1)) * time.Second) // 1s, 2s
+		}
+		data, err := registerMailRequestAny(p.client, http.MethodGet, apiBase+"/api/emails/next", map[string]string{
+			"X-API-Key":  util.Clean(p.entry["api_key"]),
+			"User-Agent": p.conf.UserAgent,
+			"Accept":     "application/json",
+		}, map[string]string{"email": util.Clean(mailbox["address"])}, nil, http.StatusOK)
+		if err != nil {
+			lastErr = err
+			if !isHloolRetryable(err) {
+				break
+			}
+			continue
+		}
+		body, ok := data.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("hlool_mail unexpected response type")
+		}
+		if success, exists := body["success"]; exists && !util.ToBool(success) {
+			return nil, fmt.Errorf("hlool_mail: %s", firstNonEmpty(util.Clean(body["error"]), "unknown error"))
+		}
+		payloadMap := util.StringMap(firstNonNil(body["data"], body))
+		if !util.ToBool(payloadMap["has_email"]) {
+			return nil, nil
+		}
+		message := util.StringMap(payloadMap["message"])
+		if len(message) == 0 {
+			return nil, nil
+		}
+		textContent, htmlContent := extractRegisterMailContent(message)
+		return map[string]any{
+			"provider":     "hlool_mail",
+			"mailbox":      util.Clean(mailbox["address"]),
+			"message_id":   util.Clean(message["id"]),
+			"subject":      util.Clean(message["subject"]),
+			"sender":       util.Clean(message["from_address"]),
+			"text_content": textContent,
+			"html_content": htmlContent,
+			"received_at":  firstNonNil(message["created_at"], message["createdAt"], message["timestamp"]),
+			"raw":          message,
+		}, nil
+	}
+	return nil, lastErr
 }
 
 func yydsMailItems(data any) []map[string]any {

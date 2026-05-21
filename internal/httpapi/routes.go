@@ -1,9 +1,13 @@
 package httpapi
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -1687,4 +1691,166 @@ func splitPath(path string) []string {
 		return nil
 	}
 	return strings.Split(trimmed, "/")
+}
+
+func (a *App) handleHLOOLMail(w http.ResponseWriter, r *http.Request) {
+	if _, ok := a.requireIdentity(w, r, ""); !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := readJSONMap(r)
+	if err != nil {
+		util.WriteError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+
+	apiBase := strings.TrimRight(firstNonEmpty(util.Clean(body["api_base"]), "https://email.hlool.cc"), "/")
+	apiKey := util.Clean(body["api_key"])
+	if apiKey == "" {
+		util.WriteError(w, http.StatusBadRequest, "api_key is required")
+		return
+	}
+
+	path := r.URL.Path
+	var method, targetPath string
+	var targetQuery map[string]string
+	var targetBody any
+
+	switch {
+	case path == "/api/hlool-mail/domains":
+		method = http.MethodGet
+		targetPath = "/api/domains/available"
+
+	case path == "/api/hlool-mail/generate":
+		method = http.MethodPost
+		targetPath = "/api/generate-email"
+		targetBody = body["payload"]
+
+	case path == "/api/hlool-mail/mailboxes":
+		method = http.MethodGet
+		targetPath = "/api/mailboxes"
+		targetQuery = map[string]string{
+			"page":     firstNonEmpty(util.Clean(body["page"]), "1"),
+			"per_page": firstNonEmpty(util.Clean(body["per_page"]), "20"),
+		}
+		if q := util.Clean(body["q"]); q != "" {
+			targetQuery["q"] = q
+		}
+
+	case path == "/api/hlool-mail/mailboxes/delete":
+		method = http.MethodDelete
+		id := util.Clean(body["id"])
+		if id == "" {
+			util.WriteError(w, http.StatusBadRequest, "id is required")
+			return
+		}
+		targetPath = "/api/mailboxes/" + id
+
+	case path == "/api/hlool-mail/emails":
+		method = http.MethodGet
+		email := util.Clean(body["email"])
+		if email == "" {
+			util.WriteError(w, http.StatusBadRequest, "email is required")
+			return
+		}
+		targetPath = "/api/emails"
+		targetQuery = map[string]string{
+			"email":    email,
+			"page":     firstNonEmpty(util.Clean(body["page"]), "1"),
+			"per_page": firstNonEmpty(util.Clean(body["per_page"]), "20"),
+		}
+
+	case path == "/api/hlool-mail/emails/next":
+		method = http.MethodGet
+		email := util.Clean(body["email"])
+		if email == "" {
+			util.WriteError(w, http.StatusBadRequest, "email is required")
+			return
+		}
+		targetPath = "/api/emails/next"
+		targetQuery = map[string]string{"email": email}
+
+	case path == "/api/hlool-mail/emails/read":
+		method = http.MethodGet
+		id := util.Clean(body["id"])
+		if id == "" {
+			util.WriteError(w, http.StatusBadRequest, "id is required")
+			return
+		}
+		targetPath = "/api/email/" + id
+
+	case path == "/api/hlool-mail/emails/clear":
+		method = http.MethodDelete
+		email := util.Clean(body["email"])
+		if email == "" {
+			util.WriteError(w, http.StatusBadRequest, "email is required")
+			return
+		}
+		targetPath = "/api/emails/clear"
+		targetQuery = map[string]string{"email": email}
+
+	default:
+		http.NotFound(w, r)
+		return
+	}
+
+	// Build target URL
+	u, err := url.Parse(apiBase + targetPath)
+	if err != nil {
+		util.WriteError(w, http.StatusBadRequest, "invalid api_base")
+		return
+	}
+	if len(targetQuery) > 0 {
+		q := u.Query()
+		for k, v := range targetQuery {
+			q.Set(k, v)
+		}
+		u.RawQuery = q.Encode()
+	}
+
+	// Build request body
+	var reqBody io.Reader
+	if targetBody != nil {
+		data, err := json.Marshal(targetBody)
+		if err != nil {
+			util.WriteError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		reqBody = bytes.NewReader(data)
+	}
+
+	req, err := http.NewRequestWithContext(r.Context(), method, u.String(), reqBody)
+	if err != nil {
+		util.WriteError(w, http.StatusInternalServerError, "failed to create request")
+		return
+	}
+	req.Header.Set("X-API-Key", apiKey)
+	req.Header.Set("Accept", "application/json")
+	if targetBody != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		util.WriteError(w, http.StatusBadGateway, fmt.Sprintf("hlool api error: %v", err))
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		util.WriteError(w, http.StatusBadGateway, "failed to read hlool api response")
+		return
+	}
+
+	var result any
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		util.WriteJSON(w, resp.StatusCode, map[string]any{"raw": string(respBody)})
+		return
+	}
+	util.WriteJSON(w, resp.StatusCode, result)
 }

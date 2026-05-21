@@ -69,6 +69,7 @@ func (a *App) routes() []appRoute {
 		subtree("/api/sub2api/servers", a.handleSub2API),
 		subtree("/api/creation-tasks", a.handleCreationTasks),
 		subtree("/api/register", a.handleRegister),
+		subtree("/api/hlool-mail", a.handleHLOOLMail),
 		exact("", "/api/settings", a.handleSettings),
 		exact("", "/api/settings/login-page-image", a.handleLoginPageImageSettings),
 		exact(http.MethodGet, "/api/app-meta", a.handleAppMeta),
@@ -81,6 +82,12 @@ func (a *App) routes() []appRoute {
 		exact("", "/api/proxy", a.handleProxy),
 		exact("", "/api/proxy/test", a.handleProxy),
 		exact(http.MethodGet, "/api/storage/info", a.handleStorageInfo),
+
+		exact(http.MethodDelete, "/api/admin/cloud/cookies", a.handleCloudCookieDelete),
+		exact("", "/api/admin/cloud/cookies", a.handleCloudCookies),
+		exact(http.MethodPost, "/api/admin/cloud/cookies/check", a.handleCloudCookieCheck),
+		exact(http.MethodGet, "/api/admin/cloud/status", a.handleCloudStorageStatus),
+		exact(http.MethodPost, "/api/admin/cloud/test-upload", a.handleCloudTestUpload),
 
 		prefix("/images/", a.handleImageFile),
 		prefix("/image-references/", a.handleImageReferenceFile),

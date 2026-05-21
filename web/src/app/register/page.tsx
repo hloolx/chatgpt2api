@@ -11,6 +11,7 @@ import { getStoredSessionToken } from "@/store/auth";
 
 import { useSettingsStore } from "../settings/store";
 import { RegisterCard } from "./components/register-card";
+import { HloolMailToolbox } from "./components/hlool-mail-toolbox";
 
 function RegisterDataController() {
   const didLoadRef = useRef(false);
@@ -50,6 +51,9 @@ function RegisterPageContent() {
       <PageHeader eyebrow="Register" title="ChatGPT注册机" />
       <section className="mt-5">
         <RegisterCard />
+      </section>
+      <section className="mt-5">
+        <HloolMailToolbox />
       </section>
     </>
   );

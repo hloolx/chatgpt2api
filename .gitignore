@@ -3,6 +3,8 @@ build/
 dist/
 web_dist
 chatgpt2api.exe
+chatgpt2api
+.claude/
 .omx/
 .codex/
 venv/

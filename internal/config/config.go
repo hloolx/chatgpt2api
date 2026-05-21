@@ -48,6 +48,10 @@ var settingEnvKeys = map[string]string{
 	"login_page_image_zoom":             "CHATGPT2API_LOGIN_PAGE_IMAGE_ZOOM",
 	"login_page_image_position_x":       "CHATGPT2API_LOGIN_PAGE_IMAGE_POSITION_X",
 	"login_page_image_position_y":       "CHATGPT2API_LOGIN_PAGE_IMAGE_POSITION_Y",
+	"cloud_storage_enabled":             "CHATGPT2API_CLOUD_STORAGE_ENABLED",
+	"cloud_storage_uploader":            "CHATGPT2API_CLOUD_STORAGE_UPLOADER",
+	"a4_cookie":                         "CHATGPT2API_A4_COOKIE",
+	"cloud_cookie_check_interval":       "CHATGPT2API_CLOUD_COOKIE_CHECK_INTERVAL",
 }
 
 var envKeyRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -415,6 +419,37 @@ func (s *Store) LoginPageImagePositionY() float64 {
 	return clampFloat(floatSetting(s.settingValue("login_page_image_position_y", 50), 50), 0, 100)
 }
 
+func (s *Store) CloudStorageEnabled() bool {
+	return util.ToBool(s.settingValue("cloud_storage_enabled", false))
+}
+
+func (s *Store) CloudStorageUploader() string {
+	switch strings.ToLower(strings.TrimSpace(fmt.Sprint(s.settingValue("cloud_storage_uploader", "auto")))) {
+	case "a4":
+		return "a4"
+	case "a1":
+		return "a1"
+	default:
+		return "auto"
+	}
+}
+
+func (s *Store) A4Cookie() string {
+	return strings.TrimSpace(fmt.Sprint(s.settingValue("a4_cookie", "")))
+}
+
+func (s *Store) CloudCookieCheckIntervalMinutes() int {
+	minutes := intSetting(s.settingValue("cloud_cookie_check_interval", 240), 240)
+	if minutes < 1 {
+		return 1
+	}
+	return minutes
+}
+
+func (s *Store) CloudCookieCheckInterval() time.Duration {
+	return time.Duration(s.CloudCookieCheckIntervalMinutes()) * time.Minute
+}
+
 func (s *Store) Get() map[string]any {
 	s.mu.RLock()
 	data := util.CopyMap(s.data)
@@ -450,6 +485,11 @@ func (s *Store) Get() map[string]any {
 	data["login_page_image_zoom"] = s.LoginPageImageZoom()
 	data["login_page_image_position_x"] = s.LoginPageImagePositionX()
 	data["login_page_image_position_y"] = s.LoginPageImagePositionY()
+	data["cloud_storage_enabled"] = s.CloudStorageEnabled()
+	data["cloud_storage_uploader"] = s.CloudStorageUploader()
+	data["a4_cookie_configured"] = s.A4Cookie() != ""
+	data["cloud_cookie_check_interval"] = s.CloudCookieCheckIntervalMinutes()
+	delete(data, "a4_cookie")
 	delete(data, "linuxdo_client_secret")
 	delete(data, "update_github_token")
 	return data
@@ -471,6 +511,12 @@ func (s *Store) Update(data map[string]any) (map[string]any, error) {
 		if key == "update_github_token" && strings.TrimSpace(fmt.Sprint(value)) == "" {
 			continue
 		}
+		if key == "a4_cookie_configured" {
+			continue
+		}
+		if key == "a4_cookie" && strings.TrimSpace(fmt.Sprint(value)) == "" {
+			continue
+		}
 		next[key] = value
 	}
 	delete(next, "image_concurrent_limit")
@@ -488,6 +534,9 @@ func (s *Store) Update(data map[string]any) (map[string]any, error) {
 	}
 	if value, ok := next["default_subscription_period"]; ok {
 		next["default_subscription_period"] = normalizeDefaultSubscriptionPeriod(value)
+	}
+	if value, ok := next["cloud_storage_uploader"]; ok {
+		next["cloud_storage_uploader"] = normalizeCloudStorageUploader(value)
 	}
 	next["update_repo"] = normalizeUpdateRepo(util.ValueOr(next["update_repo"], "ZyphrZero/chatgpt2api"))
 	if err := s.validateSettingsUpdateLocked(next); err != nil {
@@ -803,6 +852,17 @@ func normalizeDefaultSubscriptionPeriod(value any) string {
 		return strings.ToLower(strings.TrimSpace(fmt.Sprint(value)))
 	default:
 		return "monthly"
+	}
+}
+
+func normalizeCloudStorageUploader(value any) string {
+	switch strings.ToLower(strings.TrimSpace(fmt.Sprint(value))) {
+	case "a4":
+		return "a4"
+	case "a1":
+		return "a1"
+	default:
+		return "auto"
 	}
 }
 

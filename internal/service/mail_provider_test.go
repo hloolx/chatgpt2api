@@ -64,7 +64,7 @@ func TestRegisterMoEmailProviderCreatesAndReadsMailbox(t *testing.T) {
 			"domain":      []string{"example.test"},
 			"expiry_time": 15,
 		}},
-	}, "", "")
+	}, "", "", "")
 	if err != nil {
 		t.Fatalf("createRegisterMailProvider() error = %v", err)
 	}
@@ -117,7 +117,7 @@ func TestRegisterInbucketProviderCreatesAndReadsMailbox(t *testing.T) {
 			"domain":           []string{"example.test"},
 			"random_subdomain": false,
 		}},
-	}, "", "")
+	}, "", "", "")
 	if err != nil {
 		t.Fatalf("createRegisterMailProvider() error = %v", err)
 	}
@@ -185,7 +185,7 @@ func TestRegisterYYDSMailProviderCreatesAndReadsMailbox(t *testing.T) {
 			"subdomain": "sub",
 			"wildcard":  true,
 		}},
-	}, "", "")
+	}, "", "", "")
 	if err != nil {
 		t.Fatalf("createRegisterMailProvider() error = %v", err)
 	}

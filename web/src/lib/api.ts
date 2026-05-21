@@ -1627,6 +1627,25 @@ export async function fetchSub2APIImportJob(serverId: string) {
   return httpRequest<{ import_job: CPAImportJob | null }>(`/api/sub2api/servers/${serverId}/import`);
 }
 
+// ── Cloud Storage ──────────────────────────────────────────────────
+
+export type A4Cookie = {
+  id: string;
+  name: string;
+  cookie: string;
+  alive: boolean | null;  // null=unchecked, true=alive, false=dead
+  error: string;
+  last_checked: string;
+};
+
+export type CloudStorageStatus = {
+  enabled: boolean;
+  uploader_preference: string;
+  active_uploader: string;
+  a4_cookies_total: number;
+  a4_cookies_alive: number;
+};
+
 // ── Upstream proxy ────────────────────────────────────────────────
 
 export type ProxySettings = {
@@ -1656,5 +1675,216 @@ export async function testProxy(url?: string) {
   return httpRequest<{ result: ProxyTestResult }>("/api/proxy/test", {
     method: "POST",
     body: { url: url ?? "" },
+  });
+}
+
+export async function fetchCloudCookies() {
+  return httpRequest<{ cookies: A4Cookie[] }>("/api/admin/cloud/cookies");
+}
+
+export async function saveCloudCookie(payload: { id?: string; name: string; cookie: string }) {
+  return httpRequest<{ ok: boolean }>("/api/admin/cloud/cookies", {
+    method: "PUT",
+    body: payload,
+  });
+}
+
+export async function deleteCloudCookie(id: string) {
+  return httpRequest<{ ok: boolean }>(`/api/admin/cloud/cookies?id=${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function checkCloudCookies() {
+  return httpRequest<{ ok: boolean; cookies: A4Cookie[] }>("/api/admin/cloud/cookies/check", {
+    method: "POST",
+  });
+}
+
+export async function fetchCloudStorageStatus() {
+  return httpRequest<CloudStorageStatus>("/api/admin/cloud/status");
+}
+
+export async function testCloudUpload() {
+  return httpRequest<{
+    ok: boolean;
+    uploader: string;
+    cloud_url: string;
+    content_type: string;
+    verify_ok: boolean;
+  }>("/api/admin/cloud/test-upload", { method: "POST" });
+}
+
+// ── HLOOL Mail API ──────────────────────────────────────────────────
+
+export type HLOOLDomain = string;
+
+export type HLOOLDomainsResponse = {
+  success: boolean;
+  data: {
+    public_domains: string[];
+    private_domains: string[];
+    domains: string[]; // legacy
+  };
+  error: string | null;
+  usage?: Record<string, string>;
+};
+
+export type HLOOLMailbox = {
+  id: number;
+  email: string;
+  domain: string;
+  created_at: string;
+};
+
+export type HLOOLMailboxesResponse = {
+  success: boolean;
+  data: {
+    items: HLOOLMailbox[];
+    page: number;
+    per_page: number;
+    total: number;
+    total_pages: number;
+  };
+  error: string | null;
+};
+
+export type HLOOLGenerateResponse = {
+  success: boolean;
+  data: {
+    email: string;
+    reuse?: boolean;
+    domain?: string;
+    share?: {
+      url: string;
+      access_url: string;
+    };
+  };
+  error: string | null;
+};
+
+export type HLOOLDeleteMailboxResponse = {
+  success: boolean;
+  data: {
+    deleted: boolean;
+    messages_deleted: number;
+  };
+  error: string | null;
+};
+
+export type HLOOLEmailMessage = {
+  id: string;
+  subject: string;
+  from_address: string;
+  preview?: string;
+  text_content?: string;
+  html_content?: string;
+  created_at: string;
+};
+
+export type HLOOLNextEmailResponse = {
+  success: boolean;
+  data: {
+    has_email: boolean;
+    message?: HLOOLEmailMessage;
+  };
+  error: string | null;
+};
+
+export type HLOOLEmailsResponse = {
+  success: boolean;
+  data: {
+    items: HLOOLEmailMessage[];
+    page: number;
+    per_page: number;
+    total: number;
+    total_pages: number;
+  };
+  error: string | null;
+};
+
+export type HLOOLReadEmailResponse = {
+  success: boolean;
+  data: HLOOLEmailMessage & { attachments?: unknown[]; headers?: Record<string, string> };
+  error: string | null;
+};
+
+export type HLOOLClearEmailsResponse = {
+  success: boolean;
+  data: {
+    cleared: boolean;
+    messages_deleted: number;
+  };
+  error: string | null;
+};
+
+export type HLOOLMailProxyRequest = {
+  api_base?: string;
+  api_key: string;
+  // for /generate
+  payload?: { prefix?: string; domain?: string; share?: boolean };
+  // for /mailboxes, /emails
+  page?: number;
+  per_page?: number;
+  q?: string;
+  // for /mailboxes/delete, /emails/read
+  id?: number | string;
+  // for /emails, /emails/next, /emails/clear
+  email?: string;
+};
+
+export async function hlooLMailDomains(apiKey: string, apiBase?: string) {
+  return httpRequest<HLOOLDomainsResponse>("/api/hlool-mail/domains", {
+    method: "POST",
+    body: { api_key: apiKey, api_base: apiBase || "" },
+  });
+}
+
+export async function hlooLMailGenerate(apiKey: string, payload?: { prefix?: string; domain?: string }, apiBase?: string) {
+  return httpRequest<HLOOLGenerateResponse>("/api/hlool-mail/generate", {
+    method: "POST",
+    body: { api_key: apiKey, api_base: apiBase || "", payload: payload || {} },
+  });
+}
+
+export async function hlooLMailMailboxes(apiKey: string, page?: number, perPage?: number, apiBase?: string) {
+  return httpRequest<HLOOLMailboxesResponse>("/api/hlool-mail/mailboxes", {
+    method: "POST",
+    body: { api_key: apiKey, api_base: apiBase || "", page: page || 1, per_page: perPage || 20 },
+  });
+}
+
+export async function hlooLMailDeleteMailbox(apiKey: string, id: number, apiBase?: string) {
+  return httpRequest<HLOOLDeleteMailboxResponse>("/api/hlool-mail/mailboxes/delete", {
+    method: "POST",
+    body: { api_key: apiKey, api_base: apiBase || "", id },
+  });
+}
+
+export async function hlooLMailEmails(apiKey: string, email: string, page?: number, perPage?: number, apiBase?: string) {
+  return httpRequest<HLOOLEmailsResponse>("/api/hlool-mail/emails", {
+    method: "POST",
+    body: { api_key: apiKey, api_base: apiBase || "", email, page: page || 1, per_page: perPage || 20 },
+  });
+}
+
+export async function hlooLMailEmailsNext(apiKey: string, email: string, apiBase?: string) {
+  return httpRequest<HLOOLNextEmailResponse>("/api/hlool-mail/emails/next", {
+    method: "POST",
+    body: { api_key: apiKey, api_base: apiBase || "", email },
+  });
+}
+
+export async function hlooLMailEmailsRead(apiKey: string, id: string, apiBase?: string) {
+  return httpRequest<HLOOLReadEmailResponse>("/api/hlool-mail/emails/read", {
+    method: "POST",
+    body: { api_key: apiKey, api_base: apiBase || "", id },
+  });
+}
+
+export async function hlooLMailEmailsClear(apiKey: string, email: string, apiBase?: string) {
+  return httpRequest<HLOOLClearEmailsResponse>("/api/hlool-mail/emails/clear", {
+    method: "POST",
+    body: { api_key: apiKey, api_base: apiBase || "", email },
   });
 }
