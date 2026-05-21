@@ -4,6 +4,9 @@
   ChatGPT2API 是一个面向自托管场景的 ChatGPT 官网能力封装服务，提供 OpenAI 兼容图片 API、在线创作台、账号池调度、图片库、日志治理、RBAC 权限管理和 Docker 部署能力。
 </p>
 
+> [!NOTE]
+> 本分支基于 [ZyphrZero/chatgpt2api](https://github.com/ZyphrZero/chatgpt2api) 二次开发，新增了 [HloolMail](https://github.com/hloolx/HloolMail) 临时邮箱服务支持，并优化了注册流程，邮箱注册成功率接近 100%。
+
 > [!WARNING]
 > 本项目涉及对 ChatGPT 官网文本生成、图片生成、图片编辑等接口的逆向研究，仅供个人学习、技术研究与非商业性技术交流使用。
 >
@@ -86,7 +89,7 @@
 ### 1. 获取部署文件
 
 ```bash
-git clone https://github.com/ZyphrZero/chatgpt2api.git
+git clone https://github.com/hloolx/chatgpt2api.git
 cd chatgpt2api
 cp .env.example .env
 ```
