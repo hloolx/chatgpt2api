@@ -86,6 +86,20 @@ export function CloudStorageCard() {
   const setCloudStorageUploader = useSettingsStore(
     (state) => state.setCloudStorageUploader,
   );
+  const setS3Endpoint = useSettingsStore((state) => state.setS3Endpoint);
+  const setS3Region = useSettingsStore((state) => state.setS3Region);
+  const setS3AccessKeyID = useSettingsStore((state) => state.setS3AccessKeyID);
+  const setS3SecretAccessKey = useSettingsStore(
+    (state) => state.setS3SecretAccessKey,
+  );
+  const setS3Bucket = useSettingsStore((state) => state.setS3Bucket);
+  const setS3PublicURL = useSettingsStore((state) => state.setS3PublicURL);
+  const setS3PathPrefix = useSettingsStore((state) => state.setS3PathPrefix);
+  const setS3ForcePathStyle = useSettingsStore(
+    (state) => state.setS3ForcePathStyle,
+  );
+  const setCloudProxy = useSettingsStore((state) => state.setCloudProxy);
+  const setCloudProxyEnabled = useSettingsStore((state) => state.setCloudProxyEnabled);
 
   // ── Local state: A4 cookies ────────────────────────────────────────
   const [cookies, setCookies] = useState<A4Cookie[]>([]);
@@ -95,11 +109,15 @@ export function CloudStorageCard() {
 
   // Test upload
   const [isTestingUpload, setIsTestingUpload] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [testUploadResult, setTestUploadResult] = useState<{
     ok: boolean;
     uploader: string;
     cloud_url: string;
+    local_url: string;
+    local_path: string;
     verify_ok: boolean;
+    direct_url?: string;
   } | null>(null);
 
   // Add cookie dialog
@@ -193,10 +211,14 @@ export function CloudStorageCard() {
   };
 
   const handleTestUpload = async () => {
+    if (!selectedFile) {
+      toast.error("请先选择一张图片");
+      return;
+    }
     setIsTestingUpload(true);
     setTestUploadResult(null);
     try {
-      const result = await testCloudUpload();
+      const result = await testCloudUpload(selectedFile);
       setTestUploadResult(result);
       if (result.ok && result.verify_ok) {
         toast.success("测试上传成功，上传器：" + result.uploader);
@@ -319,11 +341,225 @@ export function CloudStorageCard() {
               <option value="auto">Auto</option>
               <option value="a4">A4</option>
               <option value="a1">A1</option>
+              <option value="s3">S3</option>
             </select>
           </Field>
         </section>
 
+        {/* ── Section S3: S3 Storage Configuration ────────────────────── */}
+        {config?.cloud_storage_uploader === "s3" && (
+          <section className="flex flex-col gap-3">
+            <div className="flex items-center gap-1.5">
+              <h3 className="text-sm leading-6 font-semibold text-foreground">
+                S3 存储配置
+              </h3>
+            </div>
+
+            <Field className="min-w-0 gap-1.5">
+              <FieldLabel htmlFor="s3-endpoint" className="leading-6">
+                端点 (Endpoint)
+              </FieldLabel>
+              <Input
+                id="s3-endpoint"
+                value={String(config?.s3_endpoint ?? "")}
+                onChange={(e) => setS3Endpoint(e.target.value)}
+                placeholder="https://xxx.r2.cloudflarestorage.com"
+                className={settingsInputClassName}
+              />
+            </Field>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field className="min-w-0 gap-1.5">
+                <FieldLabel htmlFor="s3-region" className="leading-6">
+                  区域 (Region)
+                </FieldLabel>
+                <Input
+                  id="s3-region"
+                  value={String(config?.s3_region ?? "auto")}
+                  onChange={(e) => setS3Region(e.target.value)}
+                  placeholder="auto"
+                  className={settingsInputClassName}
+                />
+              </Field>
+              <Field className="min-w-0 gap-1.5">
+                <FieldLabel htmlFor="s3-bucket" className="leading-6">
+                  存储桶 (Bucket)
+                </FieldLabel>
+                <Input
+                  id="s3-bucket"
+                  value={String(config?.s3_bucket ?? "")}
+                  onChange={(e) => setS3Bucket(e.target.value)}
+                  placeholder="chatgpt2api-images"
+                  className={settingsInputClassName}
+                />
+              </Field>
+            </div>
+
+            <Field className="min-w-0 gap-1.5">
+              <FieldLabel htmlFor="s3-access-key" className="leading-6">
+                Access Key ID
+              </FieldLabel>
+              <Input
+                id="s3-access-key"
+                value={String(config?.s3_access_key_id ?? "")}
+                onChange={(e) => setS3AccessKeyID(e.target.value)}
+                placeholder="Access Key ID"
+                className={settingsInputClassName}
+              />
+            </Field>
+
+            <Field className="min-w-0 gap-1.5">
+              <FieldLabel htmlFor="s3-secret-key" className="leading-6">
+                Secret Access Key
+              </FieldLabel>
+              <Input
+                id="s3-secret-key"
+                type="password"
+                value={String(config?.s3_secret_access_key ?? "")}
+                onChange={(e) => setS3SecretAccessKey(e.target.value)}
+                placeholder={
+                  config?.s3_secret_access_key_configured
+                    ? "已配置，留空则保持不变"
+                    : "Secret Access Key"
+                }
+                className={settingsInputClassName}
+              />
+            </Field>
+
+            <Field className="min-w-0 gap-1.5">
+              <FieldLabel htmlFor="s3-public-url" className="leading-6">
+                自定义域名 (可选)
+              </FieldLabel>
+              <Input
+                id="s3-public-url"
+                value={String(config?.s3_public_url ?? "")}
+                onChange={(e) => setS3PublicURL(e.target.value)}
+                placeholder="https://images.yourdomain.com"
+                className={settingsInputClassName}
+              />
+            </Field>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field className="min-w-0 gap-1.5">
+                <FieldLabel htmlFor="s3-path-prefix" className="leading-6">
+                  对象键前缀 (可选)
+                </FieldLabel>
+                <Input
+                  id="s3-path-prefix"
+                  value={String(config?.s3_path_prefix ?? "")}
+                  onChange={(e) => setS3PathPrefix(e.target.value)}
+                  placeholder="images/"
+                  className={settingsInputClassName}
+                />
+              </Field>
+              <Field className="min-w-0 gap-1.5">
+                <FieldLabel htmlFor="s3-force-path-style" className="leading-6">
+                  路径风格 (MinIO)
+                </FieldLabel>
+                <label className="flex min-h-10 min-w-0 items-center gap-2.5 rounded-[12px] border border-border/70 bg-background/75 px-3 py-2 text-sm font-medium text-foreground">
+                  <Checkbox
+                    checked={Boolean(config?.s3_force_path_style)}
+                    onCheckedChange={(value) =>
+                      setS3ForcePathStyle(Boolean(value))
+                    }
+                  />
+                  <span className="min-w-0 leading-5">启用路径风格</span>
+                </label>
+              </Field>
+            </div>
+
+            <Field className="min-w-0 gap-1.5">
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="cloud-proxy-enabled"
+                  checked={Boolean(config?.cloud_proxy_enabled ?? true)}
+                  onCheckedChange={(value) =>
+                    setCloudProxyEnabled(Boolean(value))
+                  }
+                />
+                <FieldLabel htmlFor="cloud-proxy-enabled" className="leading-6">
+                  启用云存储专用代理
+                </FieldLabel>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                关闭后云存储将直接连接，不使用任何代理
+              </p>
+            </Field>
+
+            {config?.cloud_proxy_enabled !== false && (
+              <Field className="min-w-0 gap-1.5">
+                <FieldLabel htmlFor="cloud-proxy" className="leading-6">
+                  云存储专用代理地址
+                </FieldLabel>
+                <Input
+                  id="cloud-proxy"
+                  value={String(config?.cloud_proxy ?? "")}
+                  onChange={(e) => setCloudProxy(e.target.value)}
+                  placeholder="例如: http://127.0.0.1:7890"
+                  className={settingsInputClassName}
+                />
+              </Field>
+            )}
+
+            <SettingsNotice>
+              <p className="font-medium text-foreground">S3 兼容服务</p>
+              <ul className="mt-1 list-inside list-disc">
+                <li>
+                  <strong>Cloudflare R2</strong>: 端点格式
+                  https://&lt;account_id&gt;.r2.cloudflarestorage.com，区域填
+                  auto
+                </li>
+                <li>
+                  <strong>Backblaze B2</strong>: 端点格式
+                  https://s3.us-west-002.backblazeb2.com
+                </li>
+                <li>
+                  <strong>MinIO</strong>: 需勾选「路径风格」
+                </li>
+                <li>配置后点击页面顶部「保存」生效。</li>
+              </ul>
+            </SettingsNotice>
+          </section>
+        )}
+
         {/* ── Section B: A4 Cookie Management ───────────────────────── */}
+        {config?.cloud_storage_uploader !== "s3" && config?.cloud_storage_uploader !== "auto" && (
+          <section className="flex flex-col gap-3">
+            <Field className="min-w-0 gap-1.5">
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="cloud-proxy-enabled-nons3"
+                  checked={Boolean(config?.cloud_proxy_enabled ?? true)}
+                  onCheckedChange={(value) =>
+                    setCloudProxyEnabled(Boolean(value))
+                  }
+                />
+                <FieldLabel htmlFor="cloud-proxy-enabled-nons3" className="leading-6">
+                  启用云存储专用代理
+                </FieldLabel>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                关闭后云存储将直接连接，不使用任何代理
+              </p>
+            </Field>
+
+            {config?.cloud_proxy_enabled !== false && (
+              <Field className="min-w-0 gap-1.5">
+                <FieldLabel htmlFor="cloud-proxy-nons3" className="leading-6">
+                  云存储专用代理地址
+                </FieldLabel>
+                <Input
+                  id="cloud-proxy-nons3"
+                  value={String(config?.cloud_proxy ?? "")}
+                  onChange={(e) => setCloudProxy(e.target.value)}
+                  placeholder="例如: http://127.0.0.1:7890"
+                  className={settingsInputClassName}
+                />
+              </Field>
+            )}
+          </section>
+        )}
+
         <section className="flex flex-col gap-3">
           <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-1.5">
@@ -349,23 +585,34 @@ export function CloudStorageCard() {
                 )}
                 检测存活
               </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => void handleTestUpload()}
-                disabled={isTestingUpload}
-              >
-                {isTestingUpload ? (
-                  <LoaderCircle
-                    data-icon="inline-start"
-                    className="animate-spin"
-                  />
-                ) : (
-                  <RefreshCw data-icon="inline-start" />
-                )}
-                测试上传
-              </Button>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    setSelectedFile(file ?? null);
+                  }}
+                  className="w-48 text-xs"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleTestUpload()}
+                  disabled={isTestingUpload || !selectedFile}
+                >
+                  {isTestingUpload ? (
+                    <LoaderCircle
+                      data-icon="inline-start"
+                      className="animate-spin"
+                    />
+                  ) : (
+                    <RefreshCw data-icon="inline-start" />
+                  )}
+                  测试上传
+                </Button>
+              </div>
               <Button size="sm" onClick={() => setDialogOpen(true)}>
                 <Plus data-icon="inline-start" />
                 添加
@@ -474,8 +721,46 @@ export function CloudStorageCard() {
                 <div className="flex flex-col gap-1 text-xs text-muted-foreground">
                   <span>上传器: {testUploadResult.uploader}</span>
                   <span className="break-all">
-                    云 URL: {testUploadResult.cloud_url}
+                    云 URL (加密): {testUploadResult.cloud_url}
                   </span>
+                  {testUploadResult.local_url && (
+                    <div className="mt-2 rounded-md bg-emerald-100 p-2">
+                      <span className="font-semibold text-emerald-800">
+                        解密后的真实图片地址:
+                      </span>
+                      <a
+                        href={testUploadResult.local_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-1 block break-all text-emerald-700 underline"
+                      >
+                        {window.location.origin}{testUploadResult.local_url}
+                      </a>
+                      <span className="mt-1 block text-emerald-600">
+                        此地址可直接访问，服务器会自动解密返回原始图片
+                      </span>
+                    </div>
+                  )}
+                  {testUploadResult.local_path && (
+                    <span className="break-all">
+                      本地文件路径: {testUploadResult.local_path}
+                    </span>
+                  )}
+                  {testUploadResult.direct_url && (
+                    <div className="mt-2 rounded-md bg-blue-100 p-2">
+                      <span className="font-semibold text-blue-800">
+                        直链 URL (无需解密):
+                      </span>
+                      <a
+                        href={testUploadResult.direct_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-1 block break-all text-blue-700 underline"
+                      >
+                        {testUploadResult.direct_url}
+                      </a>
+                    </div>
+                  )}
                   <span>验证下载+解密: {testUploadResult.verify_ok ? "通过" : "失败"}</span>
                 </div>
               </div>
@@ -487,7 +772,8 @@ export function CloudStorageCard() {
             <ul className="mt-1 list-inside list-disc">
               <li>A4 Cookie 用于云端存储服务的身份认证。</li>
               <li>点击「检测存活」批量验证所有 Cookie 是否仍有效。</li>
-              <li>点击「测试上传」验证云端存储上传和解密是否正常。</li>
+              <li>选择图片后点击「测试上传」验证云端存储上传和解密是否正常。</li>
+              <li>测试上传会返回本地访问地址（如 /images/2026/05/22/xxx.png）。</li>
               <li>Cookie 值在界面中部分隐藏显示以保护隐私。</li>
               <li>删除 Cookie 会立即生效且不可恢复。</li>
             </ul>

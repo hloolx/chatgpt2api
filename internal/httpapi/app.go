@@ -98,6 +98,7 @@ func NewApp() (*App, error) {
 	cloudStorage := service.NewCloudStorageService(cfg, nil, storageBackend)
 	engine := &protocol.Engine{Accounts: accounts, Config: cfg, Storage: documentStore, Proxy: proxy, Logger: logger, CloudStorage: cloudStorage}
 	app := &App{config: cfg, auth: auth, accounts: accounts, billing: billing, logs: logs, logger: logger, proxy: proxy, engine: engine, images: service.NewImageService(cfg, storageBackend), announce: service.NewAnnouncementService(storageBackend), prompts: service.NewPromptFavoriteService(storageBackend), cpa: service.NewCPAConfig(storageBackend), sub2: service.NewSub2APIConfig(storageBackend), update: newUpdateService(cfg), cloudStorage: cloudStorage, cancel: cancel}
+	app.images.SetCloudStorageRef(cloudStorage)
 	app.cpaImport = service.NewCPAImportService(app.cpa, accounts, proxy)
 	app.sub2Import = service.NewSub2APIService(app.sub2, accounts)
 	app.register = service.NewRegisterService(accounts, storageBackend)
@@ -833,18 +834,20 @@ func (a *App) handleImageFile(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	ref, ok := a.authorizeImageFileRequest(w, r, rel)
-	if !ok {
-		return
-	}
 
-	// Try cloud-backed serving first
+	// When cloud storage is enabled, try cloud-first serving.
+	// This handles the case where local file was deleted after successful cloud upload.
 	if a.cloudStorage != nil && a.cloudStorage.Enabled() {
 		if a.serveCloudImage(w, r, rel) {
 			return
 		}
 	}
 
+	// Fall back to local file serving with authorization check.
+	ref, ok := a.authorizeImageFileRequest(w, r, rel)
+	if !ok {
+		return
+	}
 	http.ServeFile(w, r, ref.Path)
 }
 
@@ -854,7 +857,18 @@ func (a *App) serveCloudImage(w http.ResponseWriter, r *http.Request, rel string
 		return false
 	}
 
-	// Fetch from cloud URL
+	// Direct URL mode (S3 with public bucket): redirect to the public URL.
+	if record.DirectURL != "" {
+		http.Redirect(w, r, record.DirectURL, http.StatusFound)
+		return true
+	}
+
+	// If no encryption key, nothing to serve (shouldn't happen without DirectURL).
+	if record.EncryptKey == "" {
+		return false
+	}
+
+	// Fetch from cloud URL and decrypt
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
@@ -874,31 +888,26 @@ func (a *App) serveCloudImage(w http.ResponseWriter, r *http.Request, rel string
 		return false
 	}
 
-	// Read the encrypted+GIF-wrapped data
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return false
 	}
 
-	// Strip GIF header
 	if len(body) <= record.HeadSize {
 		return false
 	}
 	encryptedData := body[record.HeadSize:]
 
-	// Decode the AES key from base62
 	aesKey := cloudstorage.Decode(record.EncryptKey)
 	if aesKey == nil {
 		return false
 	}
 
-	// AES-GCM decrypt
 	imageData, err := cloudstorage.DecryptAES(encryptedData, aesKey)
 	if err != nil {
 		return false
 	}
 
-	// Serve the decrypted image
 	if record.ContentType != "" {
 		w.Header().Set("Content-Type", record.ContentType)
 	}

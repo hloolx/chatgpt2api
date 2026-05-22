@@ -775,7 +775,24 @@ func (c *Client) uploadImage(ctx context.Context, input ResponsesInputImage, fil
 		data, _ := io.ReadAll(uploadResp.Body)
 		return uploadedImageRef{}, upstreamHTTPError("image_upload", uploadResp.StatusCode, data)
 	}
-	time.Sleep(500 * time.Millisecond)
+	// 指数退避轮询：50ms, 100ms, 200ms, 400ms, 800ms
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(50*(1<<attempt)) * time.Millisecond)
+		}
+		checkPath := "/backend-api/files/" + fileID
+		checkReq, _ := http.NewRequestWithContext(ctx, http.MethodHead, c.BaseURL+checkPath, nil)
+		for key, value := range c.headers(checkPath, nil) {
+			checkReq.Header.Set(key, value)
+		}
+		checkResp, err := c.httpClient.Do(checkReq)
+		if err == nil {
+			checkResp.Body.Close()
+			if checkResp.StatusCode >= 200 && checkResp.StatusCode < 300 {
+				break
+			}
+		}
+	}
 	finalizePath := "/backend-api/files/" + fileID + "/uploaded"
 	finalizeReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+finalizePath, strings.NewReader("{}"))
 	for key, value := range c.headers(finalizePath, map[string]string{"Content-Type": "application/json", "Accept": "application/json"}) {
@@ -1338,7 +1355,8 @@ func (c *Client) pollOfficialImageResults(ctx context.Context, conversationID st
 	if strings.TrimSpace(conversationID) == "" {
 		return officialConversationPollResult{}, nil
 	}
-	delay := 4 * time.Second
+	delay := 1 * time.Second
+	maxDelay := 8 * time.Second
 	for {
 		select {
 		case <-ctx.Done():
@@ -1361,7 +1379,10 @@ func (c *Client) pollOfficialImageResults(ctx context.Context, conversationID st
 			return officialConversationPollResult{}, ctx.Err()
 		case <-time.After(delay):
 		}
-		delay = 4 * time.Second
+		delay = delay * 2
+		if delay > maxDelay {
+			delay = maxDelay
+		}
 	}
 }
 

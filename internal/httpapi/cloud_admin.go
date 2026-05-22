@@ -2,8 +2,13 @@ package httpapi
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
+	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"chatgpt2api/internal/cloudstorage"
@@ -148,7 +153,10 @@ func (a *App) handleCloudStorageStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if a.cloudStorage == nil || !a.cloudStorage.Enabled() {
-		util.WriteJSON(w, http.StatusOK, map[string]any{"enabled": false})
+		util.WriteJSON(w, http.StatusOK, map[string]any{
+			"enabled":      false,
+			"storage_mode": a.config.StorageMode(),
+		})
 		return
 	}
 
@@ -171,6 +179,7 @@ func (a *App) handleCloudStorageStatus(w http.ResponseWriter, r *http.Request) {
 
 	util.WriteJSON(w, http.StatusOK, map[string]any{
 		"enabled":             true,
+		"storage_mode":        a.config.StorageMode(),
 		"uploader_preference": a.config.CloudStorageUploader(),
 		"active_uploader":     activeUploader,
 		"a4_cookies_total":    len(cookies),
@@ -178,7 +187,7 @@ func (a *App) handleCloudStorageStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleCloudTestUpload - POST uploads a small test image to verify cloud storage works
+// handleCloudTestUpload - POST uploads a user-provided image to verify cloud storage works
 func (a *App) handleCloudTestUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -198,13 +207,63 @@ func (a *App) handleCloudTestUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate a small test image (1x1 PNG pixel)
-	testImage := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x89, 0xE3, 0x85, 0x41, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82}
+	// Parse multipart form (max 20MB)
+	if err := r.ParseMultipartForm(20 << 20); err != nil {
+		util.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "failed to parse upload: " + err.Error()})
+		return
+	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	file, header, err := r.FormFile("image")
+	if err != nil {
+		util.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "missing 'image' file field: " + err.Error()})
+		return
+	}
+	defer file.Close()
+
+	// Read file data
+	imageData, err := io.ReadAll(io.LimitReader(file, 20<<20))
+	if err != nil {
+		util.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to read file: " + err.Error()})
+		return
+	}
+
+	if len(imageData) == 0 {
+		util.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "empty file"})
+		return
+	}
+
+	// Determine filename and extension
+	filename := header.Filename
+	if filename == "" {
+		filename = "test-upload.png"
+	}
+
+	// Generate relative path: YYYY/MM/DD/hash.ext
+	sum := md5.Sum(imageData)
+	now := time.Now()
+	relativeDir := filepath.Join(now.Format("2006"), now.Format("01"), now.Format("02"))
+	ext := filepath.Ext(filename)
+	if ext == "" {
+		ext = ".png"
+	}
+	rel := filepath.Join(relativeDir, fmt.Sprintf("%d_%s%s", now.Unix(), hex.EncodeToString(sum[:]), ext))
+	localPath := filepath.Join(a.config.ImagesDir(), rel)
+
+	// Save to local disk
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		util.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to create directory: " + err.Error()})
+		return
+	}
+	if err := os.WriteFile(localPath, imageData, 0o644); err != nil {
+		util.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to save file: " + err.Error()})
+		return
+	}
+
+	// Upload to cloud storage
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
-	record, err := a.cloudStorage.UploadImage(ctx, testImage, "test-upload.png")
+	record, err := a.cloudStorage.UploadImage(ctx, imageData, filename)
 	if err != nil {
 		util.WriteJSON(w, http.StatusInternalServerError, map[string]any{
 			"ok":    false,
@@ -213,7 +272,19 @@ func (a *App) handleCloudTestUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Also test that we can retrieve the image from cloud (download + decrypt)
+	// Save cloud record
+	if err := a.cloudStorage.SaveRecord(ctx, rel, record); err != nil {
+		util.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+			"ok":    false,
+			"error": "failed to save cloud record: " + err.Error(),
+		})
+		return
+	}
+
+	// Build local access URL
+	localURL := "/images/" + filepath.ToSlash(rel)
+
+	// Verify cloud download+decrypt
 	fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer fetchCancel()
 
@@ -234,13 +305,20 @@ func (a *App) handleCloudTestUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	util.WriteJSON(w, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"ok":           true,
 		"uploader":     record.Uploader,
 		"cloud_url":    record.CloudURL,
+		"local_url":    localURL,
+		"local_path":   localPath,
 		"content_type": record.ContentType,
 		"verify_ok":    verifyOk,
-	})
+	}
+	if record.DirectURL != "" {
+		response["direct_url"] = record.DirectURL
+		response["verify_ok"] = true // Direct URL means no decrypt needed
+	}
+	util.WriteJSON(w, http.StatusOK, response)
 }
 
 func maskCookieValue(cookie string) string {

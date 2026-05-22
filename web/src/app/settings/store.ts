@@ -99,6 +99,17 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
     login_page_image_position_y: loginImageTransform.positionY,
     cloud_storage_enabled: Boolean(config.cloud_storage_enabled),
     cloud_storage_uploader: typeof config.cloud_storage_uploader === "string" ? config.cloud_storage_uploader : "auto",
+    cloud_proxy: typeof config.cloud_proxy === "string" ? config.cloud_proxy : "",
+    cloud_proxy_enabled: Boolean(config.cloud_proxy_enabled ?? true),
+    s3_endpoint: typeof config.s3_endpoint === "string" ? config.s3_endpoint : "",
+    s3_region: typeof config.s3_region === "string" ? config.s3_region : "auto",
+    s3_access_key_id: typeof config.s3_access_key_id === "string" ? config.s3_access_key_id : "",
+    s3_secret_access_key: "",
+    s3_secret_access_key_configured: Boolean(config.s3_secret_access_key_configured),
+    s3_bucket: typeof config.s3_bucket === "string" ? config.s3_bucket : "",
+    s3_public_url: typeof config.s3_public_url === "string" ? config.s3_public_url : "",
+    s3_path_prefix: typeof config.s3_path_prefix === "string" ? config.s3_path_prefix : "",
+    s3_force_path_style: Boolean(config.s3_force_path_style),
   };
 }
 
@@ -180,6 +191,16 @@ type SettingsStore = {
   setRegistrationEnabled: (value: boolean) => void;
   setCloudStorageEnabled: (value: boolean) => void;
   setCloudStorageUploader: (value: string) => void;
+  setS3Endpoint: (value: string) => void;
+  setS3Region: (value: string) => void;
+  setS3AccessKeyID: (value: string) => void;
+  setS3SecretAccessKey: (value: string) => void;
+  setS3Bucket: (value: string) => void;
+  setS3PublicURL: (value: string) => void;
+  setS3PathPrefix: (value: string) => void;
+  setS3ForcePathStyle: (value: boolean) => void;
+  setCloudProxy: (value: string) => void;
+  setCloudProxyEnabled: (value: boolean) => void;
   setLinuxDoEnabled: (value: boolean) => void;
   setLinuxDoClientId: (value: string) => void;
   setLinuxDoClientSecret: (value: string) => void;
@@ -495,6 +516,37 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       if (!state.config) return state;
       return { config: { ...state.config, cloud_storage_uploader: value } };
     });
+  },
+
+  setS3Endpoint: (value) => {
+    set((state) => state.config ? { config: { ...state.config, s3_endpoint: value } } : {});
+  },
+  setS3Region: (value) => {
+    set((state) => state.config ? { config: { ...state.config, s3_region: value } } : {});
+  },
+  setS3AccessKeyID: (value) => {
+    set((state) => state.config ? { config: { ...state.config, s3_access_key_id: value } } : {});
+  },
+  setS3SecretAccessKey: (value) => {
+    set((state) => state.config ? { config: { ...state.config, s3_secret_access_key: value } } : {});
+  },
+  setS3Bucket: (value) => {
+    set((state) => state.config ? { config: { ...state.config, s3_bucket: value } } : {});
+  },
+  setS3PublicURL: (value) => {
+    set((state) => state.config ? { config: { ...state.config, s3_public_url: value } } : {});
+  },
+  setS3PathPrefix: (value) => {
+    set((state) => state.config ? { config: { ...state.config, s3_path_prefix: value } } : {});
+  },
+  setS3ForcePathStyle: (value) => {
+    set((state) => state.config ? { config: { ...state.config, s3_force_path_style: value } } : {});
+  },
+  setCloudProxy: (value) => {
+    set((state) => state.config ? { config: { ...state.config, cloud_proxy: value } } : {});
+  },
+  setCloudProxyEnabled: (value) => {
+    set((state) => state.config ? { config: { ...state.config, cloud_proxy_enabled: value } } : {});
   },
 
   setLoginPageImageUrl: (value) => {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { Globe2, History, ImagePlus, LoaderCircle, Plus, Trash2, X } from "lucide-react";
+import { History, LoaderCircle, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { ImageComposer } from "@/app/image/components/image-composer";
@@ -9,13 +9,9 @@ import { ImagePromptMarket } from "@/app/image/components/image-prompt-market";
 import { ImageResults, type ImageLightboxItem } from "@/app/image/components/image-results";
 import type { BananaPrompt } from "@/app/image/banana-prompts";
 import {
-  CUSTOM_IMAGE_ASPECT_RATIO,
   DEFAULT_IMAGE_CUSTOM_HEIGHT,
   DEFAULT_IMAGE_CUSTOM_RATIO,
   DEFAULT_IMAGE_CUSTOM_WIDTH,
-  IMAGE_ASPECT_RATIO_OPTIONS,
-  IMAGE_RESOLUTION_OPTIONS,
-  IMAGE_SIZE_MODE_OPTIONS,
   buildImageSize,
   formatImageSizeDisplay,
   getImageSizeSelectionFromSize,
@@ -35,7 +31,6 @@ import { consumeSimilarImageIntent } from "@/app/image/similar-image-intent";
 import { ImageSidebar } from "@/app/image/components/image-sidebar";
 import { ImageLightbox } from "@/components/image-lightbox";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -44,16 +39,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
 import {
   cancelCreationTask,
   CHAT_MODEL_OPTIONS,
@@ -117,924 +102,94 @@ import {
   type ImageTurnProgress,
 } from "@/store/image-turn-progress";
 
-const COMPOSER_MODE_STORAGE_KEY = "chatgpt2api:image_composer_mode";
-const IMAGE_MODEL_STORAGE_KEY = "chatgpt2api:image_last_model";
-const IMAGE_SIZE_STORAGE_KEY = "chatgpt2api:image_last_size";
-const IMAGE_SIZE_MODE_STORAGE_KEY = "chatgpt2api:image_last_size_mode";
-const IMAGE_ASPECT_RATIO_STORAGE_KEY = "chatgpt2api:image_last_aspect_ratio";
-const IMAGE_RESOLUTION_STORAGE_KEY = "chatgpt2api:image_last_resolution";
-const IMAGE_CUSTOM_RATIO_STORAGE_KEY = "chatgpt2api:image_last_custom_ratio";
-const IMAGE_CUSTOM_WIDTH_STORAGE_KEY = "chatgpt2api:image_last_custom_width";
-const IMAGE_CUSTOM_HEIGHT_STORAGE_KEY = "chatgpt2api:image_last_custom_height";
-const IMAGE_OUTPUT_FORMAT_STORAGE_KEY = "chatgpt2api:image_last_output_format";
-const IMAGE_OUTPUT_COMPRESSION_STORAGE_KEY = "chatgpt2api:image_last_output_compression";
+import { ImagePublishDialog, type PublishImageTarget, type PublishRecipeOptions } from "@/app/image/components/image-publish-dialog";
+import { ImageEditDialog, type EditingTurnDraft } from "@/app/image/components/image-edit-dialog";
+import {
+  COMPOSER_MODE_STORAGE_KEY,
+  IMAGE_MODEL_STORAGE_KEY,
+  IMAGE_SIZE_STORAGE_KEY,
+  IMAGE_SIZE_MODE_STORAGE_KEY,
+  IMAGE_ASPECT_RATIO_STORAGE_KEY,
+  IMAGE_RESOLUTION_STORAGE_KEY,
+  IMAGE_CUSTOM_RATIO_STORAGE_KEY,
+  IMAGE_CUSTOM_WIDTH_STORAGE_KEY,
+  IMAGE_CUSTOM_HEIGHT_STORAGE_KEY,
+  IMAGE_OUTPUT_FORMAT_STORAGE_KEY,
+  IMAGE_OUTPUT_COMPRESSION_STORAGE_KEY,
+  KEEP_INPUTS_AFTER_SUBMIT_STORAGE_KEY,
+  getStoredImageModel,
+  getStoredComposerMode,
+  getStoredImageSizeSelection,
+  getStoredImageOutputFormat,
+  getStoredImageOutputCompression,
+  getStoredKeepInputsAfterSubmit,
+  serializeImageSizeSelection,
+  restoreImageSizeSelection,
+  reusableOutputCompressionValue,
+  normalizeOutputCompressionValue,
+} from "@/app/image/components/image-storage-manager";
+import {
+  IMAGE_TASK_IMAGE_COUNT,
+  normalizeRequestedImageCount,
+  formatCreationTaskErrorMessage,
+  formatCreationTaskError,
+  imageTaskProgressMessage,
+  imageTaskLoadingDetail,
+  imageTaskBatchId,
+  imageTaskIdForImage,
+  imageDataIndexForTask,
+  updateStoredImage,
+  creationTaskImageStatus,
+  taskDataToStoredImage,
+  isActiveCreationTask,
+  sleep,
+  normalizeOutputCompressionValue as normalizeOutputCompressionValueFromTask,
+  formatHighResolutionHint,
+  formatBillingSummary,
+  hasEnoughBilling,
+  deriveTurnStatus,
+  deriveTurnStatusFromTaskMap,
+  isTurnInProgress,
+  usesReferenceImages,
+  isMissingBatchImageDataError,
+  isMissingRecoverableTaskIdError,
+  getComposerConversationMode,
+  buildCreationTaskMessages,
+  syncConversationCreationTasks,
+  recoverConversationHistory,
+  imageOutputFormatForModel,
+  imageOutputCompressionForModel,
+  imageOutputCompressionForFormat,
+  positiveDimension,
+  buildEffectiveImageSizeRequest,
+  isInvalidCustomRatioSelection,
+  type CreationTaskDataItem,
+} from "@/app/image/components/image-task-manager";
+import {
+  buildConversationTitle,
+  formatConversationTime,
+  createId,
+  readFileAsDataUrl,
+  dataUrlToFile,
+  imageFileExtensionForOutputFormat,
+  imageMimeTypeForOutputFormat,
+  buildReferenceImageFromResult,
+  fetchImageAsFile,
+  buildReferenceFileName,
+  buildReferenceImageFromUrl,
+  getPromptReferenceImageUrls,
+  buildReferenceImageFromStoredImage,
+  pickFallbackConversationId,
+  sortImageConversations,
+} from "@/app/image/components/image-conversation-manager";
+
 const QUOTA_REFRESH_EVENT = "chatgpt2api:quota-refresh";
 const DEFAULT_IMAGE_OUTPUT_FORMAT: ImageOutputFormat = "png";
-const activeConversationQueueIds = new Set<string>();
+const activeTurnQueueIds = new Set<string>();
 const EMPTY_IMAGE_ASPECT_RATIO_SELECT_VALUE = "__empty_aspect_ratio__";
 const MISSING_RECOVERABLE_TASK_ID_ERROR = "页面刷新或任务中断，未找到可恢复的任务 ID";
 
 type ComposerMode = "chat" | "image";
-
-type EditingTurnDraft = {
-  conversationId: string;
-  turnId: string;
-  prompt: string;
-  model: ImageModel;
-  mode: ImageConversationMode;
-  count: string;
-  sizeMode: ImageSizeMode;
-  aspectRatio: ImageAspectRatio;
-  resolution: ImageResolution;
-  customRatio: string;
-  customWidth: string;
-  customHeight: string;
-  outputFormat: ImageOutputFormat;
-  outputCompression: string;
-  visibility: ImageVisibility;
-  referenceImages: StoredReferenceImage[];
-};
-
-type PublishImageTarget = {
-  conversationId: string;
-  turnId: string;
-  imageIndex: number;
-};
-
-type PublishRecipeOptions = {
-  sharePromptParameters: boolean;
-  shareReferenceImages: boolean;
-};
-
-type CreationTaskDataItem = NonNullable<CreationTask["data"]>[number];
-
-function buildConversationTitle(prompt: string) {
-  const trimmed = prompt.trim();
-  if (trimmed.length <= 12) {
-    return trimmed;
-  }
-  return `${trimmed.slice(0, 12)}...`;
-}
-
-function formatConversationTime(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "";
-  }
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
-}
-
-function createId() {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function readFileAsDataUrl(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(new Error("读取参考图失败"));
-    reader.readAsDataURL(file);
-  });
-}
-
-function dataUrlToFile(dataUrl: string, fileName: string, mimeType?: string) {
-  const [header, content] = dataUrl.split(",", 2);
-  const matchedMimeType = header.match(/data:(.*?);base64/)?.[1];
-  const binary = atob(content || "");
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return new File([bytes], fileName, { type: mimeType || matchedMimeType || "image/png" });
-}
-
-function imageFileExtensionForOutputFormat(format?: ImageOutputFormat) {
-  return format === "jpeg" ? "jpg" : format || "png";
-}
-
-function imageMimeTypeForOutputFormat(format?: ImageOutputFormat) {
-  return format === "jpeg" ? "image/jpeg" : `image/${format || "png"}`;
-}
-
-function buildReferenceImageFromResult(image: StoredImage, fileName: string): StoredReferenceImage | null {
-  if (!image.b64_json) {
-    return null;
-  }
-  const mimeType = imageMimeTypeForOutputFormat(image.outputFormat);
-
-  return {
-    name: fileName,
-    type: mimeType,
-    dataUrl: `data:${mimeType};base64,${image.b64_json}`,
-  };
-}
-
-async function fetchImageAsFile(url: string, fileName: string) {
-  const blob = await fetchAuthenticatedImageBlob(url);
-  return new File([blob], fileName, { type: blob.type || "image/png" });
-}
-
-function buildReferenceFileName(url: string, index: number, fallbackPrefix: string) {
-  const path = url.split(/[?#]/, 1)[0] || "";
-  const rawName = path.split("/").filter(Boolean).pop() || "";
-  let name = rawName;
-  try {
-    name = rawName ? decodeURIComponent(rawName) : "";
-  } catch {
-    name = rawName;
-  }
-  if (name) {
-    return name.includes(".") ? name : `${name}.png`;
-  }
-  return `${fallbackPrefix}-${index + 1}.png`;
-}
-
-async function buildReferenceImageFromUrl(
-  url: string,
-  index: number,
-  fallbackPrefix: string,
-): Promise<StoredReferenceImage> {
-  const file = await fetchImageAsFile(url, buildReferenceFileName(url, index, fallbackPrefix));
-  return {
-    name: file.name,
-    type: file.type || "image/png",
-    dataUrl: await readFileAsDataUrl(file),
-    source: "upload",
-  };
-}
-
-function getPromptReferenceImageUrls(prompt: BananaPrompt) {
-  const urls = prompt.referenceImageUrls.length > 0 ? prompt.referenceImageUrls : [prompt.preview];
-  return Array.from(new Set(urls.map((url) => url.trim()).filter(Boolean)));
-}
-
-function reusableOutputCompressionValue(value: unknown, outputFormat: ImageOutputFormat) {
-  if (!supportsImageOutputCompression(outputFormat)) {
-    return "";
-  }
-  const compression = Number(value);
-  if (!Number.isFinite(compression)) {
-    return "";
-  }
-  return String(Math.min(100, Math.max(0, Math.round(compression))));
-}
-
-async function buildReferenceImageFromStoredImage(image: StoredImage, fileName: string) {
-  const direct = buildReferenceImageFromResult(image, fileName);
-  if (direct) {
-    return {
-      referenceImage: direct,
-      file: dataUrlToFile(direct.dataUrl, direct.name, direct.type),
-    };
-  }
-
-  if (!image.url) {
-    return null;
-  }
-  const file = await fetchImageAsFile(image.url, fileName);
-  return {
-    referenceImage: {
-      name: file.name,
-      type: file.type || "image/png",
-      dataUrl: await readFileAsDataUrl(file),
-    },
-    file,
-  };
-}
-
-const IMAGE_TASK_IMAGE_COUNT = 4;
-
-function normalizeRequestedImageCount(value: string | number) {
-  return Math.max(1, Math.min(10, Number(value) || 1));
-}
-
-function isInvalidCustomRatioSelection(sizeMode: ImageSizeMode, aspectRatio: ImageAspectRatio, customRatio: string) {
-  return sizeMode === "ratio" && aspectRatio === CUSTOM_IMAGE_ASPECT_RATIO && !parseImageRatio(customRatio);
-}
-
-function effectiveImageSizeSelection(model: ImageModel, selection: ImageSizeSelection): ImageSizeSelection {
-  if (supportsStructuredImageParameters(model)) {
-    return selection;
-  }
-  if (selection.mode !== "ratio") {
-    return {
-      ...selection,
-      mode: "auto",
-      resolution: "auto",
-    };
-  }
-  return {
-    ...selection,
-    resolution: "auto",
-  };
-}
-
-function buildEffectiveImageSizeRequest(model: ImageModel, selection: ImageSizeSelection) {
-  const effectiveSelection = effectiveImageSizeSelection(model, selection);
-  return {
-    selection: effectiveSelection,
-    size: buildImageSize(effectiveSelection),
-  };
-}
-
-function imageOutputFormatForModel(model: ImageModel, format: ImageOutputFormat) {
-  return supportsImageOutputControls(model) ? format : undefined;
-}
-
-function imageOutputCompressionForModel(model: ImageModel, format: ImageOutputFormat, value: unknown) {
-  if (!supportsImageOutputControls(model)) {
-    return undefined;
-  }
-  return imageOutputCompressionForFormat(format, value);
-}
-
-function positiveDimension(value: unknown) {
-  const dimension = Number(value);
-  return Number.isFinite(dimension) && dimension > 0 ? Math.round(dimension) : undefined;
-}
-
-function normalizeOutputCompressionValue(value: unknown): number | undefined {
-  if (value === undefined || value === null || String(value).trim() === "") {
-    return undefined;
-  }
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric) || numeric < 0) {
-    return undefined;
-  }
-  return Math.min(100, Math.round(numeric));
-}
-
-function imageOutputCompressionForFormat(format: ImageOutputFormat, value: unknown) {
-  if (!supportsImageOutputCompression(format)) {
-    return undefined;
-  }
-  return normalizeOutputCompressionValue(value);
-}
-
-function formatHighResolutionHint(canInspectAccounts: boolean) {
-  return canInspectAccounts
-    ? "Codex 结构化高分辨率参数不会在本地预拦截，会直接提交给上游；上游会按账号能力判断或返回错误。"
-    : "Codex 结构化高分辨率参数会直接提交给上游；上游会按账号能力判断或返回错误。";
-}
-
-function imageTaskProgressMessage(turn: ImageTurn, elapsedSeconds = 0) {
-  if (turn.status === "queued") {
-    return turn.mode === "chat"
-      ? {
-          message: "等待创作并发额度",
-          detail: "对话任务已入队，等待可用额度",
-        }
-      : {
-          message: "等待创作并发额度",
-          detail: "图片任务已入队，等待可用额度",
-        };
-  }
-
-  if (turn.mode === "chat") {
-    return {
-      message: "等待对话回复",
-      detail: "对话任务处理中",
-    };
-  }
-
-  const route = IMAGE_MODEL_ROUTE_DETAILS[turn.model];
-  const isHighResolution = supportsStructuredImageParameters(turn.model) && isHighResolutionImageSize(turn.size);
-  void elapsedSeconds;
-  if (isHighResolution) {
-    return {
-      message: "高分辨率生成中",
-      detail: `${getImageSizeRequirementLabel(turn.size)}，后端已提交给上游等待结果`,
-    };
-  }
-  return {
-    message: route ? `${route.routeLabel}生成中` : "等待生成结果",
-    detail: "后端正在轮询任务状态",
-  };
-}
-
-function imageTaskLoadingDetail(turn: ImageTurn, fallbackDetail: string) {
-  const counts = getImageTurnLoadingCounts(turn);
-  if (turn.mode === "chat") {
-    return fallbackDetail;
-  }
-  if (counts.queued > 0) {
-    return `${fallbackDetail}；还有 ${counts.queued} 张图片排队中`;
-  }
-  if (counts.running > 0) {
-    return `${fallbackDetail}；还有 ${counts.running} 张图片处理中`;
-  }
-  return "图片结果已返回，正在确认任务状态";
-}
-
-function imageTaskBatchId(turnId: string, imageIndex: number) {
-  return `${turnId}-task-${Math.floor(imageIndex / IMAGE_TASK_IMAGE_COUNT)}`;
-}
-
-function imageTaskIdForImage(turnId: string, images: StoredImage[], imageIndex: number) {
-  return images[imageIndex]?.taskId || imageTaskBatchId(turnId, imageIndex);
-}
-
-function imageDataIndexForTask(images: StoredImage[], imageIndex: number) {
-  const taskId = images[imageIndex]?.taskId || images[imageIndex]?.id;
-  if (!taskId) {
-    return 0;
-  }
-  return images.slice(0, imageIndex + 1).filter((image) => (image.taskId || image.id) === taskId).length - 1;
-}
-
-const STORED_IMAGE_FIELDS: Array<keyof StoredImage> = [
-  "id",
-  "taskId",
-  "taskStatus",
-  "status",
-  "path",
-  "visibility",
-  "b64_json",
-  "url",
-  "width",
-  "height",
-  "resolution",
-  "outputFormat",
-  "revised_prompt",
-  "error",
-  "text_response",
-];
-
-function updateStoredImage(image: StoredImage, updates: Partial<StoredImage>): StoredImage {
-  const next = { ...image, ...updates };
-  return STORED_IMAGE_FIELDS.every((field) => image[field] === next[field]) ? image : next;
-}
-
-function creationTaskImageStatus(task: CreationTask, dataIndex = 0): "queued" | "running" | "success" | "error" | "cancelled" | undefined {
-  const outputStatus = task.output_statuses?.[dataIndex];
-  if (outputStatus === "queued" || outputStatus === "running" || outputStatus === "success" || outputStatus === "error" || outputStatus === "cancelled") {
-    return outputStatus;
-  }
-  if (task.status === "queued" || task.status === "running" || task.status === "success" || task.status === "error" || task.status === "cancelled") {
-    return task.status;
-  }
-  return undefined;
-}
-
-function taskDataToStoredImage(image: StoredImage, task: CreationTask, dataIndex = 0, fallbackVisibility?: ImageVisibility): StoredImage {
-  const taskVisibility = task.visibility || fallbackVisibility || image.visibility || "private";
-  const successUpdates = (item: CreationTaskDataItem) => {
-    const width = positiveDimension(item.width);
-    const height = positiveDimension(item.height);
-    return {
-      taskId: task.id,
-      taskStatus: "success" as const,
-      status: "success" as const,
-      b64_json: item.b64_json,
-      url: item.url,
-      path: item.url ? getManagedImagePathFromUrl(item.url) || image.path : image.path,
-      visibility: taskVisibility,
-      width,
-      height,
-      resolution: item.resolution || (width && height ? `${width}x${height}` : image.resolution),
-      outputFormat: item.output_format || task.output_format || image.outputFormat,
-      revised_prompt: item.revised_prompt,
-      text_response: undefined,
-      error: undefined,
-    };
-  };
-  if (task.status === "success") {
-    if (task.output_type === "text") {
-      return updateStoredImage(image, {
-        taskId: task.id,
-        taskStatus: "success",
-        status: "message",
-        text_response: task.data?.[dataIndex]?.text_response || task.error || "",
-        b64_json: undefined,
-        url: undefined,
-        path: undefined,
-        visibility: undefined,
-        revised_prompt: undefined,
-        error: undefined,
-      });
-    }
-    const item = task.data?.[dataIndex];
-    if (!item?.b64_json && !item?.url) {
-      if (dataIndex > 0 && image.taskId !== image.id) {
-        const slotStatus = creationTaskImageStatus(task, dataIndex);
-        if (slotStatus === "error" || slotStatus === "cancelled") {
-          return updateStoredImage(image, {
-            taskId: task.id,
-            taskStatus: slotStatus,
-            status: slotStatus === "cancelled" ? "cancelled" : "error",
-            error: slotStatus === "cancelled" ? task.error || "任务已终止" : formatCreationTaskErrorMessage(task.error || "生成失败"),
-          });
-        }
-        return updateStoredImage(image, {
-          taskId: image.id,
-          taskStatus: "queued",
-          status: "loading",
-          error: undefined,
-        });
-      }
-      return updateStoredImage(image, {
-        taskId: task.id,
-        taskStatus: "success",
-        status: "error",
-        error: `未返回第 ${dataIndex + 1} 张图片数据`,
-      });
-    }
-    return updateStoredImage(image, successUpdates(item));
-  }
-
-  if (task.status === "queued" || task.status === "running") {
-    const item = task.data?.[dataIndex];
-    if (item?.b64_json || item?.url) {
-      return updateStoredImage(image, successUpdates(item));
-    }
-    return updateStoredImage(image, {
-      taskId: task.id,
-      taskStatus: creationTaskImageStatus(task, dataIndex) || (task.status === "queued" ? "queued" : "running"),
-      status: "loading",
-      text_response: undefined,
-      error: undefined,
-    });
-  }
-
-  if (task.status === "error") {
-    if (task.output_type === "text") {
-      return updateStoredImage(image, {
-        taskId: task.id,
-        taskStatus: "success",
-        status: "message",
-        text_response: task.error || "",
-        b64_json: undefined,
-        url: undefined,
-        path: undefined,
-        visibility: undefined,
-        revised_prompt: undefined,
-        error: undefined,
-      });
-    }
-    const item = task.data?.[dataIndex];
-    if (item?.b64_json || item?.url) {
-      return updateStoredImage(image, successUpdates(item));
-    }
-    return updateStoredImage(image, {
-      taskId: task.id,
-      taskStatus: undefined,
-      status: "error",
-      text_response: undefined,
-      error: formatCreationTaskErrorMessage(task.error || "生成失败"),
-    });
-  }
-
-  if (task.status === "cancelled") {
-    const item = task.data?.[dataIndex];
-    if (item?.b64_json || item?.url) {
-      return updateStoredImage(image, successUpdates(item));
-    }
-    return updateStoredImage(image, {
-      taskId: task.id,
-      taskStatus: undefined,
-      status: "cancelled",
-      error: task.error || "任务已终止",
-    });
-  }
-
-  return updateStoredImage(image, {
-    taskId: task.id,
-    taskStatus: creationTaskImageStatus(task, dataIndex) || "queued",
-    status: "loading",
-    text_response: undefined,
-    error: undefined,
-  });
-}
-
-function isActiveCreationTask(task: CreationTask) {
-  return task.status === "queued" || task.status === "running";
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
-function pickFallbackConversationId(conversations: ImageConversation[]) {
-  const activeConversation = conversations.find((conversation) =>
-    conversation.turns.some((turn) => turn.status === "queued" || turn.status === "generating"),
-  );
-  return activeConversation?.id ?? conversations[0]?.id ?? null;
-}
-
-function sortImageConversations(conversations: ImageConversation[]) {
-  return [...conversations].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-}
-
-function getStoredImageModel(): ImageModel {
-  if (typeof window === "undefined") {
-    return DEFAULT_IMAGE_MODEL;
-  }
-  const storedModel = window.localStorage.getItem(IMAGE_MODEL_STORAGE_KEY);
-  return isImageModel(storedModel) ? storedModel : DEFAULT_IMAGE_MODEL;
-}
-
-function getStoredComposerMode(): ComposerMode {
-  if (typeof window === "undefined") {
-    return "image";
-  }
-  return window.localStorage.getItem(COMPOSER_MODE_STORAGE_KEY) === "chat" ? "chat" : "image";
-}
-
-function getStoredImageSizeSelection(): ImageSizeSelection {
-  if (typeof window === "undefined") {
-    return getImageSizeSelectionFromSize("");
-  }
-  const fallbackSelection = getImageSizeSelectionFromSize(window.localStorage.getItem(IMAGE_SIZE_STORAGE_KEY) || "");
-  const storedSizeMode = window.localStorage.getItem(IMAGE_SIZE_MODE_STORAGE_KEY);
-  const storedAspectRatio = window.localStorage.getItem(IMAGE_ASPECT_RATIO_STORAGE_KEY) || "";
-  const storedResolution = window.localStorage.getItem(IMAGE_RESOLUTION_STORAGE_KEY);
-  const customRatio = window.localStorage.getItem(IMAGE_CUSTOM_RATIO_STORAGE_KEY) || fallbackSelection.customRatio;
-  const customWidth = window.localStorage.getItem(IMAGE_CUSTOM_WIDTH_STORAGE_KEY) || fallbackSelection.customWidth;
-  const customHeight = window.localStorage.getItem(IMAGE_CUSTOM_HEIGHT_STORAGE_KEY) || fallbackSelection.customHeight;
-  if (isImageSizeMode(storedSizeMode) && isImageAspectRatio(storedAspectRatio) && isImageResolution(storedResolution)) {
-    return {
-      mode: storedSizeMode,
-      aspectRatio: storedAspectRatio,
-      resolution: storedResolution,
-      customRatio,
-      customWidth,
-      customHeight,
-    };
-  }
-  return fallbackSelection;
-}
-
-function getStoredImageOutputFormat(): ImageOutputFormat {
-  if (typeof window === "undefined") {
-    return DEFAULT_IMAGE_OUTPUT_FORMAT;
-  }
-  const storedFormat = window.localStorage.getItem(IMAGE_OUTPUT_FORMAT_STORAGE_KEY);
-  return isImageOutputFormat(storedFormat) ? storedFormat : DEFAULT_IMAGE_OUTPUT_FORMAT;
-}
-
-function getStoredImageOutputCompression(): string {
-  if (typeof window === "undefined") {
-    return "";
-  }
-  const normalized = normalizeOutputCompressionValue(window.localStorage.getItem(IMAGE_OUTPUT_COMPRESSION_STORAGE_KEY));
-  return normalized === undefined ? "" : String(normalized);
-}
-
-function serializeImageSizeSelection(selection: ImageSizeSelection): StoredImageSizeSelection {
-  return {
-    mode: selection.mode,
-    aspectRatio: selection.aspectRatio,
-    resolution: selection.resolution,
-    customRatio: selection.customRatio,
-    customWidth: selection.customWidth,
-    customHeight: selection.customHeight,
-  };
-}
-
-function restoreImageSizeSelection(stored: StoredImageSizeSelection | undefined, fallbackSize: string): ImageSizeSelection {
-  const fallbackSelection = getImageSizeSelectionFromSize(fallbackSize);
-  if (!stored) {
-    return fallbackSelection;
-  }
-  return {
-    mode: isImageSizeMode(stored.mode) ? stored.mode : fallbackSelection.mode,
-    aspectRatio: isImageAspectRatio(stored.aspectRatio) ? stored.aspectRatio : fallbackSelection.aspectRatio,
-    resolution: isImageResolution(stored.resolution) ? stored.resolution : fallbackSelection.resolution,
-    customRatio: stored.customRatio || fallbackSelection.customRatio,
-    customWidth: stored.customWidth || fallbackSelection.customWidth,
-    customHeight: stored.customHeight || fallbackSelection.customHeight,
-  };
-}
-
-function buildTurnOutcomeMessage(successCount: number, failedCount: number, cancelledCount: number) {
-  const parts = [`成功 ${successCount} 张`];
-  if (failedCount > 0) {
-    parts.push(`失败 ${failedCount} 张`);
-  }
-  if (cancelledCount > 0) {
-    parts.push(`终止 ${cancelledCount} 张`);
-  }
-  return parts.join("，");
-}
-
-function formatCreationTaskErrorMessage(message: string) {
-  const trimmed = String(message || "").trim();
-  if (!trimmed) {
-    return "生成图片失败";
-  }
-
-  const normalized = trimmed.toLowerCase();
-  if (normalized.includes("user balance insufficient")) {
-    return "用户余额不足";
-  }
-  if (normalized.includes("user quota exceeded")) {
-    return "用户配额不足";
-  }
-  if (normalized.includes("an error occurred while processing your request")) {
-    const requestId = trimmed.match(/request id\s+([a-z0-9-]+)/i)?.[1];
-    return [
-      "上游处理图片请求失败，可能是提示词内容过多、账号能力限制或当前图片链路繁忙。",
-      "建议减少提示词内容，或稍后重试；Codex 结构化高分辨率请求可降低尺寸后再试。",
-      requestId ? `请求 ID：${requestId}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-  }
-  if (normalized.includes("no images generated") && normalized.includes("model may have refused")) {
-    return "没有生成图片，模型可能检测到敏感内容并拒绝了这次请求，请调整提示词后重试。";
-  }
-  if (normalized.includes("timed out waiting for async image generation")) {
-    return "图片生成等待超时，建议稍后重试；如果使用 Codex 结构化高分辨率参数，可降低尺寸后再试。";
-  }
-  if (normalized.includes("no available image quota")) {
-    return "当前没有可用的图片额度，请检查账号额度或稍后重试。";
-  }
-
-  return trimmed;
-}
-
-function formatCreationTaskError(error: unknown, fallback = "生成图片失败") {
-  return formatCreationTaskErrorMessage(error instanceof Error ? error.message : String(error || fallback));
-}
-
-function formatBillingSummary(session: NonNullable<ReturnType<typeof useAuthGuard>["session"]>) {
-  const billing = session.billing;
-  if (!billing) {
-    return "本地额度 --";
-  }
-  if (billing.unlimited) {
-    return "本地额度无限";
-  }
-  if (billing.type === "subscription") {
-    return `订阅剩余 ${billing.available}`;
-  }
-  return `余额 ${billing.available}`;
-}
-
-function hasEnoughBilling(session: NonNullable<ReturnType<typeof useAuthGuard>["session"]>, estimated: number) {
-  const billing = session.billing;
-  return !billing || billing.unlimited || Math.max(0, Number(billing.available) || 0) >= estimated;
-}
-
-function deriveTurnStatus(turn: ImageTurn): Pick<ImageTurn, "status" | "error"> {
-  const loadingCounts = getImageTurnLoadingCounts(turn);
-  const failedCount = turn.images.filter((image) => image.status === "error").length;
-  const successCount = turn.images.filter((image) => image.status === "success").length;
-  const cancelledCount = turn.images.filter((image) => image.status === "cancelled").length;
-  const messageCount = turn.images.filter((image) => image.status === "message").length;
-  if (loadingCounts.running > 0) {
-    return { status: "generating", error: undefined };
-  }
-  if (loadingCounts.queued > 0) {
-    return { status: "queued", error: undefined };
-  }
-  if (failedCount > 0) {
-    return { status: "error", error: buildTurnOutcomeMessage(successCount, failedCount, cancelledCount) };
-  }
-  if (cancelledCount > 0) {
-    return { status: "cancelled", error: buildTurnOutcomeMessage(successCount, failedCount, cancelledCount) };
-  }
-  if (successCount > 0) {
-    return { status: "success", error: undefined };
-  }
-  if (messageCount > 0) {
-    return { status: "message", error: undefined };
-  }
-  return { status: "queued", error: undefined };
-}
-
-function deriveTurnStatusFromTaskMap(turn: ImageTurn, images: StoredImage[]): Pick<ImageTurn, "status" | "error"> {
-  return deriveTurnStatus({ ...turn, images });
-}
-
-function isTurnInProgress(turn: ImageTurn) {
-  return (
-    turn.status === "queued" ||
-    turn.status === "generating" ||
-    turn.images.some((image) => image.status === "loading")
-  );
-}
-
-function usesReferenceImages(mode: ImageConversationMode) {
-  return mode === "image" || mode === "edit";
-}
-
-function isMissingBatchImageDataError(error?: string) {
-  return typeof error === "string" && error.startsWith("未返回第 ") && error.endsWith(" 张图片数据");
-}
-
-function isMissingRecoverableTaskIdError(error?: string) {
-  return error === MISSING_RECOVERABLE_TASK_ID_ERROR;
-}
-
-function getComposerConversationMode(composerMode: ComposerMode, referenceImages: StoredReferenceImage[]): ImageConversationMode {
-  if (composerMode === "chat") {
-    return "chat";
-  }
-  if (referenceImages.length === 0) {
-    return "generate";
-  }
-  return referenceImages.some((image) => image.source === "conversation") ? "edit" : "image";
-}
-
-function buildCreationTaskMessages(conversation: ImageConversation, activeTurnId: string): CreationTaskMessage[] {
-  const messages: CreationTaskMessage[] = [];
-  for (const turn of conversation.turns) {
-    const prompt = turn.prompt.trim();
-    if (prompt) {
-      messages.push({ role: "user", content: prompt });
-    }
-    if (turn.id === activeTurnId) {
-      break;
-    }
-
-    const assistantParts = turn.images.flatMap((image) => {
-      if (image.status === "message" && image.text_response?.trim()) {
-        return [image.text_response.trim()];
-      }
-      if (image.status === "success" && image.revised_prompt?.trim()) {
-        return [`Generated image: ${image.revised_prompt.trim()}`];
-      }
-      return [];
-    });
-    if (assistantParts.length > 0) {
-      messages.push({ role: "assistant", content: assistantParts.join("\n\n") });
-    }
-  }
-  return messages;
-}
-
-async function syncConversationCreationTasks(items: ImageConversation[]) {
-  const taskIds = Array.from(
-    new Set(
-      items.flatMap((conversation) =>
-        conversation.turns.flatMap((turn) =>
-          turn.images.flatMap((image) => (image.status === "loading" && image.taskId ? [image.taskId] : [])),
-        ),
-      ),
-    ),
-  );
-  if (taskIds.length === 0) {
-    return items;
-  }
-
-  let taskList: Awaited<ReturnType<typeof fetchCreationTasks>>;
-  try {
-    taskList = await fetchCreationTasks(taskIds);
-  } catch {
-    return items;
-  }
-  const taskMap = new Map(taskList.items.map((task) => [task.id, task]));
-  let changed = false;
-  const normalized = items.map((conversation) => {
-    let completedActiveTurn = false;
-    const turns = conversation.turns.map((turn) => {
-      let turnChanged = false;
-      const images = turn.images.map((image, imageIndex) => {
-        if (image.status !== "loading" || !image.taskId) {
-          return image;
-        }
-        const task = taskMap.get(image.taskId);
-        if (!task) {
-          return image;
-        }
-        const nextImage = taskDataToStoredImage(image, task, imageDataIndexForTask(turn.images, imageIndex), turn.visibility);
-        if (nextImage !== image) {
-          turnChanged = true;
-        }
-        return nextImage;
-      });
-      if (!turnChanged) {
-        return turn;
-      }
-      changed = true;
-      const derived = deriveTurnStatusFromTaskMap(turn, images);
-      const nextTurn = {
-        ...turn,
-        ...derived,
-        images,
-      };
-      if (isTurnInProgress(turn) && !isTurnInProgress(nextTurn)) {
-        completedActiveTurn = true;
-      }
-      return nextTurn;
-    });
-    if (turns === conversation.turns || !turns.some((turn, index) => turn !== conversation.turns[index])) {
-      return conversation;
-    }
-    const nextConversation = {
-      ...conversation,
-      turns,
-    };
-    return completedActiveTurn
-      ? {
-          ...nextConversation,
-          updatedAt: new Date().toISOString(),
-        }
-      : nextConversation;
-  });
-
-  if (changed) {
-    await saveImageConversations(normalized);
-  }
-  return normalized;
-}
-
-async function recoverConversationHistory(items: ImageConversation[]) {
-  let changed = false;
-  const normalized = items.map((conversation) => {
-    const turns = conversation.turns.map((turn) => {
-      let turnChanged = false;
-      const recoveredImages = turn.images.map((image, imageIndex) => {
-        if (image.status === "error" && isMissingBatchImageDataError(image.error)) {
-          turnChanged = true;
-          return {
-            ...image,
-            taskId: image.id,
-            status: "loading" as const,
-            error: undefined,
-          };
-        }
-        if (turn.mode === "chat" && image.status === "error" && isMissingRecoverableTaskIdError(image.error)) {
-          turnChanged = true;
-          return {
-            ...image,
-            taskId: imageTaskIdForImage(turn.id, turn.images, imageIndex),
-            status: "loading" as const,
-            error: undefined,
-          };
-        }
-        if (turn.mode === "chat" && image.status === "loading" && !image.taskId) {
-          turnChanged = true;
-          return {
-            ...image,
-            taskId: imageTaskIdForImage(turn.id, turn.images, imageIndex),
-          };
-        }
-        return image;
-      });
-
-      if (turn.status !== "queued" && turn.status !== "generating") {
-        if (!turnChanged) {
-          return turn;
-        }
-        changed = true;
-        const derived = deriveTurnStatus({ ...turn, status: "queued", images: recoveredImages });
-        return {
-          ...turn,
-          ...derived,
-          images: recoveredImages,
-        };
-      }
-
-      const images = recoveredImages.map((image) => {
-        if (image.status !== "loading" || image.taskId) {
-          return image;
-        }
-        turnChanged = true;
-        return {
-          ...image,
-          status: "error" as const,
-          error: MISSING_RECOVERABLE_TASK_ID_ERROR,
-        };
-      });
-      const derived = deriveTurnStatus({ ...turn, images });
-      if (!turnChanged && derived.status === turn.status && derived.error === turn.error) {
-        return turn;
-      }
-      changed = true;
-      return {
-        ...turn,
-        ...derived,
-        images,
-      };
-    });
-
-    if (!turns.some((turn, index) => turn !== conversation.turns[index])) {
-      return conversation;
-    }
-
-    return {
-      ...conversation,
-      turns,
-      updatedAt: new Date().toISOString(),
-    };
-  });
-
-  if (changed) {
-    await saveImageConversations(normalized);
-  }
-
-  return syncConversationCreationTasks(normalized);
-}
 
 
 function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof useAuthGuard>["session"]> }) {
@@ -1062,6 +217,7 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
   const [imageCustomHeight, setImageCustomHeight] = useState(() => getStoredImageSizeSelection().customHeight);
   const [imageOutputFormat, setImageOutputFormat] = useState<ImageOutputFormat>(getStoredImageOutputFormat);
   const [imageOutputCompression, setImageOutputCompression] = useState(getStoredImageOutputCompression);
+  const [keepInputsAfterSubmit, setKeepInputsAfterSubmit] = useState(getStoredKeepInputsAfterSubmit);
   const [defaultImageVisibility, setDefaultImageVisibility] = useState<ImageVisibility>("private");
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isPromptMarketOpen, setIsPromptMarketOpen] = useState(false);
@@ -1501,6 +657,13 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
   }, [imageOutputCompression, imageOutputFormat]);
 
   useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(KEEP_INPUTS_AFTER_SUBMIT_STORAGE_KEY, String(keepInputsAfterSubmit));
+  }, [keepInputsAfterSubmit]);
+
+  useEffect(() => {
     if (selectedConversationId && !conversations.some((conversation) => conversation.id === selectedConversationId)) {
       setSelectedConversationId(pickFallbackConversationId(conversations));
     }
@@ -1550,16 +713,18 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
 
   const clearComposerInputs = useCallback(() => {
     promptApplyRequestIdRef.current += 1;
-    setImagePrompt("");
+    if (!keepInputsAfterSubmit) {
+      setImagePrompt("");
+      setReferenceImages([]);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    }
     setImageCount("1");
     setImageOutputFormat(DEFAULT_IMAGE_OUTPUT_FORMAT);
     setImageOutputCompression("");
     setDefaultImageVisibility("private");
-    setReferenceImages([]);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
-  }, []);
+  }, [keepInputsAfterSubmit]);
 
   const resetComposer = useCallback(() => {
     clearComposerInputs();
@@ -2001,22 +1166,25 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
   }, []);
 
   const runConversationQueue = useCallback(
-    async (conversationId: string) => {
-      if (activeConversationQueueIds.has(conversationId)) {
-        return;
-      }
-
+    async (conversationId: string, targetTurnId?: string) => {
       const snapshot = conversationsRef.current.find((conversation) => conversation.id === conversationId);
-      const activeTurn = snapshot?.turns.find(
-        (turn) =>
-          (turn.status === "queued" || turn.status === "generating") &&
-          turn.images.some((image) => image.status === "loading"),
-      );
+      const activeTurn = targetTurnId
+        ? snapshot?.turns.find((turn) => turn.id === targetTurnId)
+        : snapshot?.turns.find(
+            (turn) =>
+              (turn.status === "queued" || turn.status === "generating") &&
+              turn.images.some((image) => image.status === "loading"),
+          );
       if (!snapshot || !activeTurn) {
         return;
       }
 
-      activeConversationQueueIds.add(conversationId);
+      const turnKey = `${conversationId}:${activeTurn.id}`;
+      if (activeTurnQueueIds.has(turnKey)) {
+        return;
+      }
+
+      activeTurnQueueIds.add(turnKey);
       const activeTurnKey = imageTurnProgressKey(conversationId, activeTurn.id);
       const activeTurnStartedAt = imageTurnStartedAtTimestamp(activeTurn.processingStartedAt, activeTurn.createdAt);
       updateTurnProgress(conversationId, activeTurn.id, {
@@ -2287,17 +1455,17 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
       } finally {
         clearTurnProgress(conversationId, activeTurn.id);
         cancelledTurnIdsRef.current.delete(activeTurnKey);
-        activeConversationQueueIds.delete(conversationId);
+        activeTurnQueueIds.delete(turnKey);
         for (const conversation of conversationsRef.current) {
-          if (
-            !activeConversationQueueIds.has(conversation.id) &&
-            conversation.turns.some(
-              (turn) =>
-                (turn.status === "queued" || turn.status === "generating") &&
-                turn.images.some((image) => image.status === "loading"),
-            )
-          ) {
-            void runConversationQueue(conversation.id);
+          for (const turn of conversation.turns) {
+            const currentTurnKey = `${conversation.id}:${turn.id}`;
+            if (
+              !activeTurnQueueIds.has(currentTurnKey) &&
+              (turn.status === "queued" || turn.status === "generating") &&
+              turn.images.some((image) => image.status === "loading")
+            ) {
+              void runConversationQueue(conversation.id, turn.id);
+            }
           }
         }
       }
@@ -2306,15 +1474,15 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
   );
   useEffect(() => {
     for (const conversation of conversations) {
-      if (
-        !activeConversationQueueIds.has(conversation.id) &&
-        conversation.turns.some(
-          (turn) =>
-            (turn.status === "queued" || turn.status === "generating") &&
-            turn.images.some((image) => image.status === "loading"),
-        )
-      ) {
-        void runConversationQueue(conversation.id);
+      for (const turn of conversation.turns) {
+        const turnKey = `${conversation.id}:${turn.id}`;
+        if (
+          !activeTurnQueueIds.has(turnKey) &&
+          (turn.status === "queued" || turn.status === "generating") &&
+          turn.images.some((image) => image.status === "loading")
+        ) {
+          void runConversationQueue(conversation.id, turn.id);
+        }
       }
     }
   }, [conversations, runConversationQueue]);
@@ -2904,385 +2072,14 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
         </Dialog>
 
         {editingTurnDraft ? (
-          <Dialog open onOpenChange={(open) => (!open ? setEditingTurnDraft(null) : null)}>
-            <DialogContent className="flex max-h-[88dvh] w-[min(92vw,640px)] flex-col overflow-hidden rounded-[28px] p-0">
-              <DialogHeader className="px-6 pt-6 pb-2">
-                <DialogTitle>{editingTurnDraft.mode === "chat" ? "编辑对话" : "编辑生成设置"}</DialogTitle>
-                <DialogDescription>
-                  {editingTurnDraft.mode === "chat" ? "修改本轮消息和对话模型。" : "修改本轮提示词、参考图和生成参数。"}
-                </DialogDescription>
-              </DialogHeader>
-              <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
-                <div className="flex flex-col gap-5">
-                  <label className="flex flex-col gap-2 text-sm font-medium text-stone-700">
-                    提示词
-                    <Textarea
-                      value={editingTurnDraft.prompt}
-                      onChange={(event) =>
-                        setEditingTurnDraft((current) =>
-                          current ? { ...current, prompt: event.target.value } : current,
-                        )
-                      }
-                      className="min-h-[128px] resize-y rounded-2xl border-stone-200 bg-white text-sm leading-6 shadow-none"
-                    />
-                  </label>
-
-                  {editingTurnDraft.mode !== "chat" ? (
-                  <div className="flex flex-col gap-3">
-                    <input
-                      ref={editFileInputRef}
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      className="hidden"
-                      onChange={(event) => {
-                        void handleEditReferenceImageChange(Array.from(event.target.files || []));
-                      }}
-                    />
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="text-sm font-medium text-stone-700">参考图</div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="rounded-full border-stone-200 bg-white"
-                        onClick={() => editFileInputRef.current?.click()}
-                      >
-                        <ImagePlus className="size-4" />
-                        上传图片
-                      </Button>
-                    </div>
-                    {editingTurnDraft.referenceImages.length > 0 ? (
-                      <div className="flex flex-wrap gap-2">
-                        {editingTurnDraft.referenceImages.map((image, index) => (
-                          <div key={`${image.name}-${index}`} className="relative size-20 shrink-0">
-                            <button
-                              type="button"
-                              className="size-20 overflow-hidden rounded-2xl border border-stone-200 bg-stone-100"
-                              onClick={() =>
-                                openLightbox(
-                                  editingTurnDraft.referenceImages.map((item, itemIndex) => ({
-                                    id: `${item.name}-${itemIndex}`,
-                                    src: item.dataUrl,
-                                  })),
-                                  index,
-                                )
-                              }
-                              aria-label={`预览参考图 ${image.name || index + 1}`}
-                            >
-                              <img
-                                src={image.dataUrl}
-                                alt={image.name || `参考图 ${index + 1}`}
-                                className="h-full w-full object-cover"
-                              />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveEditReferenceImage(index)}
-                              className="absolute -top-1 -right-1 z-10 inline-flex size-6 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-500 shadow-sm transition hover:text-stone-900"
-                              aria-label={`移除参考图 ${image.name || index + 1}`}
-                            >
-                              <X className="size-3.5" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                  ) : null}
-
-                  <div className={cn("grid grid-cols-1 gap-3", editingTurnDraft.mode === "chat" ? "sm:grid-cols-1" : "sm:grid-cols-2 lg:grid-cols-4")}>
-                    {editingTurnDraft.mode !== "chat" ? (
-                    <label className="flex flex-col gap-2 text-sm font-medium text-stone-700">
-                      张数
-                      <Input
-                        type="number"
-                        inputMode="numeric"
-                        min="1"
-                        max="10"
-                        step="1"
-                        value={editingTurnDraft.count}
-                        onChange={(event) =>
-                          setEditingTurnDraft((current) =>
-                            current ? { ...current, count: event.target.value } : current,
-                          )
-                        }
-                      />
-                    </label>
-                    ) : null}
-                    <label className="flex flex-col gap-2 text-sm font-medium text-stone-700">
-                      模型
-                      <Select
-                        value={editingTurnDraft.model}
-                        onValueChange={(value) =>
-                          setEditingTurnDraft((current) =>
-                            current && isImageModel(value) ? { ...current, model: value } : current,
-                          )
-                        }
-                      >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectGroup>
-                            {(editingTurnDraft.mode === "chat" ? CHAT_MODEL_OPTIONS : IMAGE_CREATION_MODEL_OPTIONS).map((option) => (
-                              <SelectItem key={option.value} value={option.value}>
-                                {option.label}
-                              </SelectItem>
-                            ))}
-                          </SelectGroup>
-                        </SelectContent>
-                      </Select>
-                    </label>
-                    {editingTurnDraft.mode !== "chat" && editingDraftEffectiveSizeSelection ? (
-                      <>
-                        <div className="rounded-2xl border border-sky-100 bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-900 sm:col-span-2 lg:col-span-4">
-                          {editingDraftOfficialRoute
-                            ? "官方链路只会把比例写入提示词作为构图偏好，不下发 1080P / 2K / 4K 或质量参数；格式由后端保存结果时处理，压缩率仅适用于 JPEG。"
-                            : "Codex 链路会下发结构化尺寸、格式和 JPEG 压缩率参数；后端只保存上游返回的图片，不做格式二次转换。Free 账号会被上游 Codex 图片接口拒绝。"}
-                        </div>
-                        <label className="flex flex-col gap-2 text-sm font-medium text-stone-700">
-                          {editingDraftOfficialRoute ? "构图" : "尺寸"}
-                          <Select
-                            value={editingDraftEffectiveSizeSelection.mode}
-                            onValueChange={(value) =>
-                              setEditingTurnDraft((current) =>
-                                current && isImageSizeMode(value) ? { ...current, sizeMode: value } : current,
-                              )
-                            }
-                          >
-                            <SelectTrigger>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectGroup>
-                                {IMAGE_SIZE_MODE_OPTIONS.filter((option) => editingDraftStructuredParameters || option.value !== "custom").map((option) => (
-                                  <SelectItem key={option.value} value={option.value}>
-                                    {option.label}
-                                  </SelectItem>
-                                ))}
-                              </SelectGroup>
-                            </SelectContent>
-                          </Select>
-                        </label>
-                        {editingDraftStructuredParameters && editingDraftEffectiveSizeSelection.mode === "custom" ? (
-                          <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-end gap-2 lg:col-span-2">
-                            <label className="flex min-w-0 flex-col gap-2 text-sm font-medium text-stone-700">
-                              宽度
-                              <Input
-                                type="number"
-                                inputMode="numeric"
-                                min="1"
-                                step="1"
-                                value={editingTurnDraft.customWidth}
-                                onChange={(event) =>
-                                  setEditingTurnDraft((current) =>
-                                    current ? { ...current, customWidth: event.target.value } : current,
-                                  )
-                                }
-                              />
-                            </label>
-                            <span className="pb-2 text-sm font-medium text-stone-400">x</span>
-                            <label className="flex min-w-0 flex-col gap-2 text-sm font-medium text-stone-700">
-                              高度
-                              <Input
-                                type="number"
-                                inputMode="numeric"
-                                min="1"
-                                step="1"
-                                value={editingTurnDraft.customHeight}
-                                onChange={(event) =>
-                                  setEditingTurnDraft((current) =>
-                                    current ? { ...current, customHeight: event.target.value } : current,
-                                  )
-                                }
-                              />
-                            </label>
-                          </div>
-                        ) : null}
-                        {editingDraftEffectiveSizeSelection.mode === "ratio" ? (
-                          <>
-                            <label className="flex flex-col gap-2 text-sm font-medium text-stone-700">
-                              比例
-                              <Select
-                                value={editingTurnDraft.aspectRatio || EMPTY_IMAGE_ASPECT_RATIO_SELECT_VALUE}
-                                onValueChange={(value) =>
-                                  setEditingTurnDraft((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          aspectRatio:
-                                            value === EMPTY_IMAGE_ASPECT_RATIO_SELECT_VALUE
-                                              ? ""
-                                              : isImageAspectRatio(value)
-                                                ? value
-                                                : current.aspectRatio,
-                                        }
-                                      : current,
-                                  )
-                                }
-                              >
-                                <SelectTrigger>
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectGroup>
-                                    {IMAGE_ASPECT_RATIO_OPTIONS.map((option) => (
-                                      <SelectItem
-                                        key={option.label}
-                                        value={option.value || EMPTY_IMAGE_ASPECT_RATIO_SELECT_VALUE}
-                                      >
-                                        {option.label}
-                                      </SelectItem>
-                                    ))}
-                                  </SelectGroup>
-                                </SelectContent>
-                              </Select>
-                            </label>
-                            {editingDraftStructuredParameters ? (
-                              <label className="flex flex-col gap-2 text-sm font-medium text-stone-700">
-                                分辨率
-                                <Select
-                                  value={editingTurnDraft.resolution}
-                                  onValueChange={(value) =>
-                                    setEditingTurnDraft((current) =>
-                                      current && isImageResolution(value) ? { ...current, resolution: value } : current,
-                                    )
-                                  }
-                                >
-                                  <SelectTrigger>
-                                    <SelectValue />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    <SelectGroup>
-                                      {IMAGE_RESOLUTION_OPTIONS.map((option) => (
-                                        <SelectItem key={option.value} value={option.value}>
-                                          {option.label}
-                                        </SelectItem>
-                                      ))}
-                                    </SelectGroup>
-                                  </SelectContent>
-                                </Select>
-                              </label>
-                            ) : null}
-                            {editingTurnDraft.aspectRatio === CUSTOM_IMAGE_ASPECT_RATIO ? (
-                              <label className="flex flex-col gap-2 text-sm font-medium text-stone-700 sm:col-span-2">
-                                自定义比例
-                                <Input
-                                  value={editingTurnDraft.customRatio}
-                                  onChange={(event) =>
-                                    setEditingTurnDraft((current) =>
-                                      current ? { ...current, customRatio: event.target.value } : current,
-                                    )
-                                  }
-                                  placeholder="例如 5:4 / 2.39:1"
-                                  aria-invalid={editingDraftCustomRatioInvalid}
-                                  className={cn(editingDraftCustomRatioInvalid && "border-red-300 focus-visible:ring-red-500/20")}
-                                />
-                              </label>
-                            ) : null}
-                          </>
-                        ) : null}
-                        {editingDraftOutputControls ? (
-                          <>
-                            <label className="flex flex-col gap-2 text-sm font-medium text-stone-700">
-                              格式
-                              <Select
-                                value={editingTurnDraft.outputFormat}
-                                onValueChange={(value) =>
-                                  setEditingTurnDraft((current) =>
-                                    current && isImageOutputFormat(value)
-                                      ? {
-                                          ...current,
-                                          outputFormat: value,
-                                          outputCompression: supportsImageOutputCompression(value) ? current.outputCompression : "",
-                                        }
-                                      : current,
-                                  )
-                                }
-                              >
-                                <SelectTrigger>
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectGroup>
-                                    {IMAGE_OUTPUT_FORMAT_OPTIONS.map((option) => (
-                                      <SelectItem key={option.value} value={option.value}>
-                                        {option.label}
-                                      </SelectItem>
-                                    ))}
-                                  </SelectGroup>
-                                </SelectContent>
-                              </Select>
-                            </label>
-                            <label className="flex flex-col gap-2 text-sm font-medium text-stone-700">
-                              压缩率
-                              <Input
-                                type="number"
-                                inputMode="numeric"
-                                min="0"
-                                max="100"
-                                step="1"
-                                value={editingTurnDraft.outputCompression}
-                                disabled={!supportsImageOutputCompression(editingTurnDraft.outputFormat)}
-                                onChange={(event) =>
-                                  setEditingTurnDraft((current) =>
-                                    current ? { ...current, outputCompression: event.target.value } : current,
-                                  )
-                                }
-                                placeholder={supportsImageOutputCompression(editingTurnDraft.outputFormat) ? "0-100" : "仅 JPEG"}
-                              />
-                            </label>
-                          </>
-                        ) : null}
-                        {editingDraftEffectiveSizeSelection.mode !== "auto" ? (
-                          <>
-                            <div className="rounded-2xl border border-stone-200 bg-stone-50 px-3 py-2 text-sm sm:col-span-2 lg:col-span-4">
-                              <div className="flex min-w-0 items-center justify-between gap-3">
-                                <span className="shrink-0 font-medium text-stone-600">
-                                  {editingDraftOfficialRoute ? "构图偏好" : "计算后分辨率"}
-                                </span>
-                                <span className={cn(
-                                  "min-w-0 truncate text-right font-mono font-semibold",
-                                  editingDraftSizeIsHighResolution ? "text-amber-700" : "text-stone-900",
-                                )}>
-                                  {editingDraftSizePreviewLabel}
-                                </span>
-                              </div>
-                              <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-stone-500">
-                                <span className="min-w-0 truncate">{editingDraftSizePreviewDetail}</span>
-                                {editingDraftSizeIsHighResolution ? (
-                                  <span className="shrink-0 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-amber-100">
-                                    高分辨率
-                                  </span>
-                                ) : null}
-                              </div>
-                            </div>
-                            {editingDraftSizeIsHighResolution ? (
-                              <div className="rounded-2xl border border-amber-100 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 sm:col-span-2 lg:col-span-4">
-                                {highResolutionHint}
-                              </div>
-                            ) : null}
-                          </>
-                        ) : null}
-                      </>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-              <DialogFooter className="border-t border-stone-100 px-6 py-4">
-                <Button variant="outline" onClick={() => setEditingTurnDraft(null)}>
-                  取消
-                </Button>
-                <Button variant="outline" onClick={() => void handleSaveEditingTurn(false)}>
-                  保存
-                </Button>
-                <Button onClick={() => void handleSaveEditingTurn(true)}>
-                  {editingTurnDraft.mode === "chat" ? "保存并重新发送" : "保存并重新生成"}
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
+          <ImageEditDialog
+            editingTurnDraft={editingTurnDraft}
+            setEditingTurnDraft={setEditingTurnDraft}
+            editFileInputRef={editFileInputRef}
+            onOpenLightbox={openLightbox}
+            onSave={handleSaveEditingTurn}
+            onClose={() => setEditingTurnDraft(null)}
+          />
         ) : null}
 
         <div className="relative flex min-h-0 flex-col gap-2 sm:gap-4">
@@ -3384,6 +2181,8 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
                 onOpenPromptMarket={() => setIsPromptMarketOpen(true)}
                 onReferenceImageChange={handleReferenceImageChange}
                 onRemoveReferenceImage={handleRemoveReferenceImage}
+                keepInputsAfterSubmit={keepInputsAfterSubmit}
+                onKeepInputsAfterSubmitChange={setKeepInputsAfterSubmit}
               />
             </div>
           </div>
@@ -3405,60 +2204,14 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
       />
 
       {publishImageTarget ? (
-        <Dialog open onOpenChange={(open) => (!open && !visibilityMutatingImageKey ? setPublishImageTarget(null) : null)}>
-          <DialogContent showCloseButton={false} className="rounded-2xl p-6">
-            <DialogHeader className="gap-2">
-              <DialogTitle>公开图片</DialogTitle>
-              <DialogDescription className="text-sm leading-6">
-                将这张图片加入公开图库。
-              </DialogDescription>
-            </DialogHeader>
-            <div className="grid gap-3 py-1">
-              <label className="flex items-start gap-3 rounded-xl border border-stone-200 bg-white px-3 py-3 text-sm">
-                <Checkbox
-                  className="mt-0.5"
-                  checked={publishRecipeOptions.sharePromptParameters}
-                  onCheckedChange={(checked) =>
-                    setPublishRecipeOptions({
-                      sharePromptParameters: checked === true,
-                      shareReferenceImages: checked === true ? publishRecipeOptions.shareReferenceImages : false,
-                    })
-                  }
-                />
-                <span className="min-w-0">
-                  <span className="block font-medium text-stone-900">公开原始提示词和生成参数</span>
-                  <span className="mt-0.5 block text-xs leading-5 text-stone-500">公开图库会展示可复用的 prompt、模型、尺寸和输出设置。</span>
-                </span>
-              </label>
-              <label className="flex items-start gap-3 rounded-xl border border-stone-200 bg-white px-3 py-3 text-sm">
-                <Checkbox
-                  className="mt-0.5"
-                  checked={publishRecipeOptions.shareReferenceImages}
-                  disabled={!publishRecipeOptions.sharePromptParameters}
-                  onCheckedChange={(checked) =>
-                    setPublishRecipeOptions((current) => ({
-                      ...current,
-                      shareReferenceImages: checked === true,
-                    }))
-                  }
-                />
-                <span className="min-w-0">
-                  <span className="block font-medium text-stone-900">公开原始参考图用于同款生成</span>
-                  <span className="mt-0.5 block text-xs leading-5 text-stone-500">其他用户复用时可以读取这些参考图；不勾选时会改用公开成品图。</span>
-                </span>
-              </label>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setPublishImageTarget(null)} disabled={visibilityMutatingImageKey !== ""}>
-                取消
-              </Button>
-              <Button onClick={() => void handleConfirmPublishImage()} disabled={visibilityMutatingImageKey !== ""}>
-                {visibilityMutatingImageKey ? <LoaderCircle className="size-4 animate-spin" /> : <Globe2 className="size-4" />}
-                公开
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+        <ImagePublishDialog
+          publishImageTarget={publishImageTarget}
+          publishRecipeOptions={publishRecipeOptions}
+          setPublishRecipeOptions={setPublishRecipeOptions}
+          visibilityMutatingImageKey={visibilityMutatingImageKey}
+          onConfirm={() => void handleConfirmPublishImage()}
+          onClose={() => setPublishImageTarget(null)}
+        />
       ) : null}
 
       {deleteConfirm ? (

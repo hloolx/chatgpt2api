@@ -7,6 +7,7 @@ import {
   Image as ImageIcon,
   ImagePlus,
   MessageCircle,
+  Pin,
   Plus,
   SlidersHorizontal,
   Store,
@@ -95,6 +96,8 @@ type ImageComposerProps = {
   onOpenPromptMarket: () => void;
   onReferenceImageChange: (files: File[]) => void | Promise<void>;
   onRemoveReferenceImage: (index: number) => void;
+  keepInputsAfterSubmit: boolean;
+  onKeepInputsAfterSubmitChange: (value: boolean) => void;
 };
 
 const PROMPT_AREA_MIN_HEIGHT = 74;
@@ -314,6 +317,8 @@ export function ImageComposer({
   onOpenPromptMarket,
   onReferenceImageChange,
   onRemoveReferenceImage,
+  keepInputsAfterSubmit,
+  onKeepInputsAfterSubmitChange,
 }: ImageComposerProps) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
@@ -1109,6 +1114,21 @@ export function ImageComposer({
                     </PopoverContent>
                   </Popover>
                   ) : null}
+                <button
+                  type="button"
+                  onClick={() => onKeepInputsAfterSubmitChange(!keepInputsAfterSubmit)}
+                  className={cn(
+                    "inline-flex size-9 shrink-0 items-center justify-center gap-1.5 rounded-full transition hover:bg-black/[0.05] dark:text-muted-foreground dark:hover:bg-accent/60 dark:hover:text-foreground sm:h-8 sm:w-auto sm:border sm:px-3 sm:text-xs sm:font-medium",
+                    keepInputsAfterSubmit
+                      ? "text-[#1456f0] bg-[#eef4ff] dark:text-sky-300 dark:bg-sky-950/30 sm:border-[#bfdbfe] sm:bg-[#eef4ff] sm:text-[#1456f0] sm:dark:border-sky-900/70 sm:dark:bg-sky-950/30 sm:dark:text-sky-300"
+                      : "text-[#686b73] sm:border-[#e5e7eb] sm:bg-white sm:text-[#45515e] sm:dark:border-border sm:dark:bg-background/70 sm:dark:text-muted-foreground",
+                  )}
+                  aria-label={keepInputsAfterSubmit ? "关闭发送后保留内容" : "开启发送后保留内容"}
+                  title={keepInputsAfterSubmit ? "发送后保留内容：已开启" : "发送后保留内容：已关闭"}
+                >
+                  <Pin className={cn("size-5 sm:size-3.5", keepInputsAfterSubmit && "fill-current")} />
+                  <span className="hidden sm:inline">保留</span>
+                </button>
               </div>
 
               <div className="flex shrink-0 items-center gap-2">

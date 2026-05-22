@@ -48,10 +48,21 @@ var settingEnvKeys = map[string]string{
 	"login_page_image_zoom":             "CHATGPT2API_LOGIN_PAGE_IMAGE_ZOOM",
 	"login_page_image_position_x":       "CHATGPT2API_LOGIN_PAGE_IMAGE_POSITION_X",
 	"login_page_image_position_y":       "CHATGPT2API_LOGIN_PAGE_IMAGE_POSITION_Y",
+	"storage_mode":                      "CHATGPT2API_STORAGE_MODE",
 	"cloud_storage_enabled":             "CHATGPT2API_CLOUD_STORAGE_ENABLED",
 	"cloud_storage_uploader":            "CHATGPT2API_CLOUD_STORAGE_UPLOADER",
 	"a4_cookie":                         "CHATGPT2API_A4_COOKIE",
 	"cloud_cookie_check_interval":       "CHATGPT2API_CLOUD_COOKIE_CHECK_INTERVAL",
+	"s3_endpoint":                       "CHATGPT2API_S3_ENDPOINT",
+	"s3_region":                         "CHATGPT2API_S3_REGION",
+	"s3_access_key_id":                  "CHATGPT2API_S3_ACCESS_KEY_ID",
+	"s3_secret_access_key":              "CHATGPT2API_S3_SECRET_ACCESS_KEY",
+	"s3_bucket":                         "CHATGPT2API_S3_BUCKET",
+	"s3_public_url":                     "CHATGPT2API_S3_PUBLIC_URL",
+	"s3_path_prefix":                    "CHATGPT2API_S3_PATH_PREFIX",
+	"s3_force_path_style":               "CHATGPT2API_S3_FORCE_PATH_STYLE",
+	"cloud_proxy":                       "CHATGPT2API_CLOUD_PROXY",
+	"cloud_proxy_enabled":               "CHATGPT2API_CLOUD_PROXY_ENABLED",
 }
 
 var envKeyRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -288,6 +299,18 @@ func (s *Store) Proxy() string {
 	return strings.TrimSpace(fmt.Sprint(s.settingValue("proxy", "")))
 }
 
+// CloudProxy returns the dedicated proxy URL for cloud storage operations.
+// When set, cloud uploads/downloads use this proxy instead of the global proxy.
+func (s *Store) CloudProxy() string {
+	return strings.TrimSpace(fmt.Sprint(s.settingValue("cloud_proxy", "")))
+}
+
+// CloudProxyEnabled returns whether the dedicated cloud proxy is enabled.
+// When false, cloud storage operations will not use any proxy (direct connection).
+func (s *Store) CloudProxyEnabled() bool {
+	return util.ToBool(s.settingValue("cloud_proxy_enabled", true))
+}
+
 func (s *Store) UpdateProxyURL() string {
 	if value := strings.TrimSpace(os.Getenv("CHATGPT2API_UPDATE_PROXY_URL")); value != "" {
 		return value
@@ -419,8 +442,20 @@ func (s *Store) LoginPageImagePositionY() float64 {
 	return clampFloat(floatSetting(s.settingValue("login_page_image_position_y", 50), 50), 0, 100)
 }
 
+func (s *Store) StorageMode() string {
+	mode := strings.ToLower(strings.TrimSpace(fmt.Sprint(s.settingValue("storage_mode", ""))))
+	if mode == "cloud" || mode == "local" {
+		return mode
+	}
+	// Backward compat: if storage_mode is not set but cloud_storage_enabled is true, use "cloud".
+	if util.ToBool(s.settingValue("cloud_storage_enabled", false)) {
+		return "cloud"
+	}
+	return "local"
+}
+
 func (s *Store) CloudStorageEnabled() bool {
-	return util.ToBool(s.settingValue("cloud_storage_enabled", false))
+	return s.StorageMode() == "cloud"
 }
 
 func (s *Store) CloudStorageUploader() string {
@@ -429,6 +464,8 @@ func (s *Store) CloudStorageUploader() string {
 		return "a4"
 	case "a1":
 		return "a1"
+	case "s3":
+		return "s3"
 	default:
 		return "auto"
 	}
@@ -436,6 +473,46 @@ func (s *Store) CloudStorageUploader() string {
 
 func (s *Store) A4Cookie() string {
 	return strings.TrimSpace(fmt.Sprint(s.settingValue("a4_cookie", "")))
+}
+
+func (s *Store) S3Endpoint() string {
+	return strings.TrimSpace(fmt.Sprint(s.settingValue("s3_endpoint", "")))
+}
+
+func (s *Store) S3Region() string {
+	v := strings.TrimSpace(fmt.Sprint(s.settingValue("s3_region", "")))
+	if v == "" {
+		return "auto"
+	}
+	return v
+}
+
+func (s *Store) S3AccessKeyID() string {
+	return strings.TrimSpace(fmt.Sprint(s.settingValue("s3_access_key_id", "")))
+}
+
+func (s *Store) S3SecretAccessKey() string {
+	return strings.TrimSpace(fmt.Sprint(s.settingValue("s3_secret_access_key", "")))
+}
+
+func (s *Store) S3Bucket() string {
+	return strings.TrimSpace(fmt.Sprint(s.settingValue("s3_bucket", "")))
+}
+
+func (s *Store) S3PublicURL() string {
+	return strings.TrimSpace(fmt.Sprint(s.settingValue("s3_public_url", "")))
+}
+
+func (s *Store) S3PathPrefix() string {
+	v := strings.TrimSpace(fmt.Sprint(s.settingValue("s3_path_prefix", "")))
+	if v != "" && !strings.HasSuffix(v, "/") {
+		v += "/"
+	}
+	return v
+}
+
+func (s *Store) S3ForcePathStyle() bool {
+	return util.ToBool(s.settingValue("s3_force_path_style", false))
 }
 
 func (s *Store) CloudCookieCheckIntervalMinutes() int {
@@ -470,6 +547,8 @@ func (s *Store) Get() map[string]any {
 	data["auto_remove_rate_limited_accounts"] = s.AutoRemoveRateLimitedAccounts()
 	data["log_levels"] = s.LogLevels()
 	data["proxy"] = s.Proxy()
+	data["cloud_proxy"] = s.CloudProxy()
+	data["cloud_proxy_enabled"] = s.CloudProxyEnabled()
 	data["base_url"] = s.BaseURL()
 	data["registration_enabled"] = s.RegistrationEnabled()
 	linuxdo := s.LinuxDoOAuth()
@@ -485,11 +564,21 @@ func (s *Store) Get() map[string]any {
 	data["login_page_image_zoom"] = s.LoginPageImageZoom()
 	data["login_page_image_position_x"] = s.LoginPageImagePositionX()
 	data["login_page_image_position_y"] = s.LoginPageImagePositionY()
+	data["storage_mode"] = s.StorageMode()
 	data["cloud_storage_enabled"] = s.CloudStorageEnabled()
 	data["cloud_storage_uploader"] = s.CloudStorageUploader()
 	data["a4_cookie_configured"] = s.A4Cookie() != ""
 	data["cloud_cookie_check_interval"] = s.CloudCookieCheckIntervalMinutes()
+	data["s3_endpoint"] = s.S3Endpoint()
+	data["s3_region"] = s.S3Region()
+	data["s3_access_key_id"] = s.S3AccessKeyID()
+	data["s3_secret_access_key_configured"] = s.S3SecretAccessKey() != ""
+	data["s3_bucket"] = s.S3Bucket()
+	data["s3_public_url"] = s.S3PublicURL()
+	data["s3_path_prefix"] = s.S3PathPrefix()
+	data["s3_force_path_style"] = s.S3ForcePathStyle()
 	delete(data, "a4_cookie")
+	delete(data, "s3_secret_access_key")
 	delete(data, "linuxdo_client_secret")
 	delete(data, "update_github_token")
 	return data
@@ -517,6 +606,15 @@ func (s *Store) Update(data map[string]any) (map[string]any, error) {
 		if key == "a4_cookie" && strings.TrimSpace(fmt.Sprint(value)) == "" {
 			continue
 		}
+		if key == "cloud_proxy" && strings.TrimSpace(fmt.Sprint(value)) == "" {
+			continue
+		}
+		if key == "s3_secret_access_key_configured" {
+			continue
+		}
+		if key == "s3_secret_access_key" && strings.TrimSpace(fmt.Sprint(value)) == "" {
+			continue
+		}
 		next[key] = value
 	}
 	delete(next, "image_concurrent_limit")
@@ -534,6 +632,17 @@ func (s *Store) Update(data map[string]any) (map[string]any, error) {
 	}
 	if value, ok := next["default_subscription_period"]; ok {
 		next["default_subscription_period"] = normalizeDefaultSubscriptionPeriod(value)
+	}
+	// Sync cloud_storage_enabled → storage_mode for backward compatibility.
+	if _, ok := next["cloud_storage_enabled"]; ok {
+		if util.ToBool(next["cloud_storage_enabled"]) {
+			next["storage_mode"] = "cloud"
+		} else {
+			next["storage_mode"] = "local"
+		}
+	}
+	if value, ok := next["storage_mode"]; ok {
+		next["storage_mode"] = normalizeStorageMode(value)
 	}
 	if value, ok := next["cloud_storage_uploader"]; ok {
 		next["cloud_storage_uploader"] = normalizeCloudStorageUploader(value)
@@ -855,12 +964,23 @@ func normalizeDefaultSubscriptionPeriod(value any) string {
 	}
 }
 
+func normalizeStorageMode(value any) string {
+	switch strings.ToLower(strings.TrimSpace(fmt.Sprint(value))) {
+	case "cloud":
+		return "cloud"
+	default:
+		return "local"
+	}
+}
+
 func normalizeCloudStorageUploader(value any) string {
 	switch strings.ToLower(strings.TrimSpace(fmt.Sprint(value))) {
 	case "a4":
 		return "a4"
 	case "a1":
 		return "a1"
+	case "s3":
+		return "s3"
 	default:
 		return "auto"
 	}

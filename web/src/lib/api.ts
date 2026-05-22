@@ -264,6 +264,7 @@ export type ManagedImage = {
   owner_id?: string;
   owner_name?: string;
   visibility: ImageVisibility;
+  storage_location?: string;
   prompt?: string;
   model?: ImageModel;
   quality?: ImageQuality;
@@ -1705,14 +1706,26 @@ export async function fetchCloudStorageStatus() {
   return httpRequest<CloudStorageStatus>("/api/admin/cloud/status");
 }
 
-export async function testCloudUpload() {
+export async function testCloudUpload(imageFile: File) {
+  const formData = new FormData();
+  formData.append("image", imageFile);
+
   return httpRequest<{
     ok: boolean;
     uploader: string;
     cloud_url: string;
+    local_url: string;
+    local_path: string;
     content_type: string;
     verify_ok: boolean;
-  }>("/api/admin/cloud/test-upload", { method: "POST" });
+    direct_url?: string;
+  }>("/api/admin/cloud/test-upload", {
+    method: "POST",
+    body: formData,
+    headers: {
+      "Content-Type": "multipart/form-data",
+    },
+  });
 }
 
 // ── HLOOL Mail API ──────────────────────────────────────────────────

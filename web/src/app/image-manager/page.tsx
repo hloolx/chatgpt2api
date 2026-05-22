@@ -7,6 +7,7 @@ import { toast } from "sonner";
 
 import { writeSimilarImageIntent } from "@/app/image/similar-image-intent";
 import { AuthenticatedImage } from "@/components/authenticated-image";
+import { Badge } from "@/components/ui/badge";
 import { DateRangeFilter } from "@/components/date-range-filter";
 import { ImageLightbox } from "@/components/image-lightbox";
 import { PageHeader } from "@/components/page-header";
@@ -1732,6 +1733,14 @@ function ImageManagerContent({
                     >
                       <div className="text-left text-white drop-shadow-sm">
                         <div className="text-[10px] font-bold tracking-wide">{getManagedImageFormatLabel(item)}</div>
+                        {item.storage_location ? (
+                          <Badge
+                            variant={item.storage_location === "local" ? "success" : "default"}
+                            className="mt-0.5 h-4 px-1.5 text-[9px] font-semibold"
+                          >
+                            {item.storage_location === "local" ? "本地" : "云端"}
+                          </Badge>
+                        ) : null}
                         <div className="mt-0.5 truncate text-[11px] text-white/90">{item.created_at}</div>
                         {imageMeta ? (
                           <div className="mt-0.5 truncate text-[11px] text-white/90">{imageMeta}</div>

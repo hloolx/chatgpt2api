@@ -19,12 +19,14 @@ import (
 
 // CloudImageRecord holds the result of a cloud storage upload.
 type CloudImageRecord struct {
-	CloudURL    string `json:"cloud_url"`
-	EncryptKey  string `json:"encrypt_key"`  // base62-encoded AES key
-	HeadSize    int    `json:"head_size"`    // GIF header size to strip during download
-	Uploader    string `json:"uploader"`     // "线路A1" or "线路A4"
-	UploadedAt  int64  `json:"uploaded_at"`  // unix timestamp
-	ContentType string `json:"content_type"` // original image MIME type
+	CloudURL       string `json:"cloud_url"`
+	DirectURL      string `json:"direct_url,omitempty"` // direct public URL (S3 with PublicURL)
+	EncryptKey     string `json:"encrypt_key,omitempty"` // base62-encoded AES key (empty for direct mode)
+	HeadSize       int    `json:"head_size"`             // GIF header size to strip during download
+	Uploader       string `json:"uploader"`              // "线路A1", "线路A4", or "S3"
+	UploadedAt     int64  `json:"uploaded_at"`           // unix timestamp
+	ContentType    string `json:"content_type"`          // original image MIME type
+	StorageLocation string `json:"storage_location"`     // "local" or "cloud"
 }
 
 // CloudStorageService manages uploading images to free cloud storage.
@@ -47,7 +49,9 @@ func NewCloudStorageService(cfg *config.Store, httpClient *http.Client, backend 
 	}
 }
 
-// GetHTTPClient returns the HTTP client, creating a default one if nil.
+// GetHTTPClient returns the HTTP client for cloud storage operations.
+// Uses the dedicated cloud proxy (CHATGPT2API_CLOUD_PROXY) if configured and enabled.
+// When cloud_proxy_enabled is false, cloud storage operations use direct connection (no proxy).
 func (s *CloudStorageService) GetHTTPClient() *http.Client {
 	s.mu.RLock()
 	client := s.httpClient
@@ -60,17 +64,20 @@ func (s *CloudStorageService) GetHTTPClient() *http.Client {
 	if s.httpClient != nil {
 		return s.httpClient
 	}
-	// Get the proxy URL from config
-	proxyURL := s.config.Proxy()
+
 	var proxyFunc func(*http.Request) (*url.URL, error)
-	if proxyURL != "" {
-		if parsed, err := url.Parse(proxyURL); err == nil {
-			proxyFunc = http.ProxyURL(parsed)
+
+	// Check if cloud proxy is enabled
+	if s.config.CloudProxyEnabled() {
+		// Use dedicated cloud proxy if configured
+		proxyURL := s.config.CloudProxy()
+		if proxyURL != "" {
+			if parsed, err := url.Parse(proxyURL); err == nil {
+				proxyFunc = http.ProxyURL(parsed)
+			}
 		}
 	}
-	if proxyFunc == nil {
-		proxyFunc = http.ProxyFromEnvironment
-	}
+	// When cloud_proxy_enabled is false, proxyFunc remains nil (direct connection)
 
 	s.httpClient = &http.Client{
 		Timeout: 60 * time.Second,
@@ -106,8 +113,8 @@ func (s *CloudStorageService) GetCookieStore() *CloudCookieStore {
 }
 
 // UploadImage uploads an image to cloud storage and returns the result record.
-// It encrypts the image data with AES-256, prepends a GIF header, and uploads
-// via A4 (docs.qq.com) if a live cookie is available, falling back to A1 (flash.cn).
+// For S3 with PublicURL configured, uploads the raw image (no encryption) and sets DirectURL.
+// For A1/A4 or S3 without PublicURL, encrypts with AES-256 and optionally prepends a GIF header.
 func (s *CloudStorageService) UploadImage(ctx context.Context, imageData []byte, filename string) (*CloudImageRecord, error) {
 	if !s.config.CloudStorageEnabled() {
 		return nil, fmt.Errorf("cloud storage is disabled")
@@ -115,53 +122,63 @@ func (s *CloudStorageService) UploadImage(ctx context.Context, imageData []byte,
 
 	client := s.GetHTTPClient()
 
-	// Generate GIF head for camouflage
-	gifHead, err := cloudstorage.GenerateDefaultGIF()
-	if err != nil {
-		return nil, fmt.Errorf("generate gif head: %w", err)
-	}
-	headSize := len(gifHead)
-
-	// Generate random AES-256 key (32 bytes)
-	aesKey, err := cloudstorage.GenerateRandomByteArray(32)
-	if err != nil {
-		return nil, fmt.Errorf("generate aes key: %w", err)
-	}
-
-	// Encrypt image data with AES-256-CBC
-	encrypted, err := cloudstorage.EncryptAES(imageData, aesKey)
-	if err != nil {
-		return nil, fmt.Errorf("encrypt image: %w", err)
-	}
-
-	// Prepend GIF head to encrypted data
-	uploadData := make([]byte, 0, headSize+len(encrypted))
-	uploadData = append(uploadData, gifHead...)
-	uploadData = append(uploadData, encrypted...)
-
-	// Encode key for storage
-	encryptKey := cloudstorage.Encode(aesKey)
-
-	// Select uploader and upload with retries
 	uploader := s.selectUploader()
 	if uploader == nil {
 		return nil, fmt.Errorf("no available uploader")
 	}
 
+	isS3 := uploader.Name() == "S3"
+	s3Direct := isS3 && s.config.S3PublicURL() != ""
+
+	var headSize int
+	var uploadData []byte
+	var encryptKey string
+
+	if s3Direct {
+		// S3 direct mode: upload raw image, no encryption
+		headSize = 0
+		uploadData = imageData
+		encryptKey = ""
+	} else {
+		// Encrypted mode
+		aesKey, err := cloudstorage.GenerateRandomByteArray(32)
+		if err != nil {
+			return nil, fmt.Errorf("generate aes key: %w", err)
+		}
+		encrypted, err := cloudstorage.EncryptAES(imageData, aesKey)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt image: %w", err)
+		}
+		encryptKey = cloudstorage.Encode(aesKey)
+
+		if isS3 {
+			headSize = 0
+			uploadData = encrypted
+		} else {
+			gifHead, gifErr := cloudstorage.GenerateDefaultGIF()
+			if gifErr != nil {
+				return nil, fmt.Errorf("generate gif head: %w", gifErr)
+			}
+			headSize = len(gifHead)
+			uploadData = make([]byte, 0, headSize+len(encrypted))
+			uploadData = append(uploadData, gifHead...)
+			uploadData = append(uploadData, encrypted...)
+		}
+	}
+
 	var lastErr error
 	var rawURL string
+	var err error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			time.Sleep(100 * time.Millisecond)
 		}
-
 		rawURL, err = uploader.DoUpload(ctx, client, uploadData, headSize)
 		if err == nil && rawURL != "" {
 			break
 		}
 		lastErr = err
 		if attempt < 2 {
-			// Log masked error for debugging
 			log.Printf("[cloudstorage] upload attempt %d/%d failed: %v", attempt+1, 3, err)
 		}
 	}
@@ -172,25 +189,41 @@ func (s *CloudStorageService) UploadImage(ctx context.Context, imageData []byte,
 		return nil, fmt.Errorf("upload failed after 3 attempts")
 	}
 
-	// Append hash fragment for integrity verification
 	cloudURL := cloudstorage.WithHashFragment(rawURL, imageData)
-
-	// Determine content type from filename
 	contentType := contentTypeFromFilename(filename)
 
-	return &CloudImageRecord{
-		CloudURL:    cloudURL,
-		EncryptKey:  encryptKey,
-		HeadSize:    headSize,
-		Uploader:    uploader.Name(),
-		UploadedAt:  time.Now().Unix(),
-		ContentType: contentType,
-	}, nil
+	record := &CloudImageRecord{
+		CloudURL:       cloudURL,
+		EncryptKey:     encryptKey,
+		HeadSize:       headSize,
+		Uploader:       uploader.Name(),
+		UploadedAt:     time.Now().Unix(),
+		ContentType:    contentType,
+		StorageLocation: "cloud",
+	}
+	if s3Direct {
+		record.DirectURL = rawURL
+	}
+	return record, nil
 }
 
 // selectUploader selects the best available uploader based on config and cookie aliveness.
 func (s *CloudStorageService) selectUploader() cloudstorage.Uploader {
 	preference := s.config.CloudStorageUploader()
+
+	// If explicitly set to s3, use it
+	if preference == "s3" {
+		return cloudstorage.NewS3Uploader(cloudstorage.S3Config{
+			Endpoint:       s.config.S3Endpoint(),
+			Region:         s.config.S3Region(),
+			AccessKeyID:    s.config.S3AccessKeyID(),
+			SecretAccessKey: s.config.S3SecretAccessKey(),
+			Bucket:         s.config.S3Bucket(),
+			PublicURL:      s.config.S3PublicURL(),
+			PathPrefix:     s.config.S3PathPrefix(),
+			ForcePathStyle: s.config.S3ForcePathStyle(),
+		})
+	}
 
 	// If explicitly set to a1, use it
 	if preference == "a1" {
@@ -250,6 +283,14 @@ func (s *CloudStorageService) SaveRecord(ctx context.Context, imageRel string, r
 	return saveStoredJSON(s.jsonStore, "cloud_image/"+imageRel+".json", record)
 }
 
+// DeleteRecord removes a cloud image record from the database.
+func (s *CloudStorageService) DeleteRecord(ctx context.Context, imageRel string) error {
+	if s.jsonStore == nil {
+		return fmt.Errorf("no storage backend available for cloud records")
+	}
+	return s.jsonStore.DeleteJSONDocument("cloud_image/" + imageRel + ".json")
+}
+
 // GetRecord retrieves a cloud image record for the given relative image path.
 func (s *CloudStorageService) GetRecord(ctx context.Context, imageRel string) (*CloudImageRecord, error) {
 	if s.jsonStore == nil {
@@ -264,12 +305,14 @@ func (s *CloudStorageService) GetRecord(ctx context.Context, imageRel string) (*
 		return nil, fmt.Errorf("invalid cloud record format for %s", imageRel)
 	}
 	return &CloudImageRecord{
-		CloudURL:    stringValue(m, "cloud_url"),
-		EncryptKey:  stringValue(m, "encrypt_key"),
-		HeadSize:    int(int64Value(m, "head_size")),
-		Uploader:    stringValue(m, "uploader"),
-		UploadedAt:  int64Value(m, "uploaded_at"),
-		ContentType: stringValue(m, "content_type"),
+		CloudURL:       stringValue(m, "cloud_url"),
+		DirectURL:      stringValue(m, "direct_url"),
+		EncryptKey:     stringValue(m, "encrypt_key"),
+		HeadSize:       int(int64Value(m, "head_size")),
+		Uploader:       stringValue(m, "uploader"),
+		UploadedAt:     int64Value(m, "uploaded_at"),
+		ContentType:    stringValue(m, "content_type"),
+		StorageLocation: stringValue(m, "storage_location"),
 	}, nil
 }
 

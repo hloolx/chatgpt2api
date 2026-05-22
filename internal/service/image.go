@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"image"
@@ -165,10 +166,13 @@ type ImageVisibilityUpdateOptions struct {
 }
 
 type ImageService struct {
-	config        ImageConfig
-	store         storage.JSONDocumentBackend
-	thumbnailMu   sync.Mutex
-	thumbnailJobs map[string]*thumbnailJob
+	config          ImageConfig
+	store           storage.JSONDocumentBackend
+	thumbnailMu     sync.Mutex
+	thumbnailJobs   map[string]*thumbnailJob
+	cloudStorageRef interface {
+		GetRecord(ctx context.Context, imageRel string) (*CloudImageRecord, error)
+	}
 }
 
 type imageFileRef struct {
@@ -200,6 +204,13 @@ type imageStorageRemovalStats struct {
 
 func NewImageService(config ImageConfig, backend ...storage.Backend) *ImageService {
 	return &ImageService{config: config, store: firstJSONDocumentStore(backend)}
+}
+
+// SetCloudStorageRef sets the cloud storage reference for gallery listing.
+func (s *ImageService) SetCloudStorageRef(ref interface {
+	GetRecord(ctx context.Context, imageRel string) (*CloudImageRecord, error)
+}) {
+	s.cloudStorageRef = ref
 }
 
 func (s *ImageService) StorageGovernance() ImageStorageGovernanceSummary {
@@ -324,14 +335,21 @@ func (s *ImageService) ListImages(baseURL, startDate, endDate string, scope Imag
 			return nil
 		}
 		thumb := s.thumbnailInfo(rel, info)
+		storageLocation := "local"
+		if s.cloudStorageRef != nil {
+			if record, _ := s.cloudStorageRef.GetRecord(context.Background(), rel); record != nil && record.StorageLocation == "cloud" {
+				storageLocation = "cloud"
+			}
+		}
 		item := map[string]any{
-			"name":       filepath.Base(path),
-			"path":       rel,
-			"date":       day,
-			"size":       info.Size(),
-			"url":        publicAssetURL(baseURL, "images", rel),
-			"created_at": info.ModTime().Format("2006-01-02 15:04:05"),
-			"visibility": meta.Visibility,
+			"name":             filepath.Base(path),
+			"path":             rel,
+			"date":             day,
+			"size":             info.Size(),
+			"url":              publicAssetURL(baseURL, "images", rel),
+			"created_at":       info.ModTime().Format("2006-01-02 15:04:05"),
+			"visibility":       meta.Visibility,
+			"storage_location": storageLocation,
 		}
 		addImageMetadataFields(item, meta, imageMetadataFieldOptions{
 			BaseURL:                baseURL,

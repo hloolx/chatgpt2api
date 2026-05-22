@@ -1091,18 +1091,20 @@ func (e *Engine) SaveImageBytesForOwnerWithFormat(imageData []byte, baseURL, own
 	rel := filepath.Join(relativeDir, filename)
 	filePath := filepath.Join(e.Config.ImagesDir(), rel)
 	_ = os.MkdirAll(filepath.Dir(filePath), 0o755)
+
+	// Always write to local disk first as a safety net.
 	_ = os.WriteFile(filePath, imageData, 0o644)
 	e.writeImageOwnerMetadata(rel, ownerID, ownerName)
 
-	// Async upload to cloud storage (best-effort, does not block the response).
+	// Cloud storage: upload immediately (sync). On success, delete local file.
 	if e.CloudStorage != nil && e.CloudStorage.Enabled() {
-		go func(data []byte, fname string) {
+		go func(data []byte, fname string, localPath string) {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			record, err := e.CloudStorage.UploadImage(ctx, data, fname)
 			if err != nil {
 				if e.Logger != nil {
-					e.Logger.Warning("cloud upload failed", "filename", fname, "error", err)
+					e.Logger.Warning("cloud upload failed, keeping local file", "filename", fname, "error", err)
 				}
 				return
 			}
@@ -1110,8 +1112,15 @@ func (e *Engine) SaveImageBytesForOwnerWithFormat(imageData []byte, baseURL, own
 				if e.Logger != nil {
 					e.Logger.Warning("cloud record save failed", "filename", fname, "error", err)
 				}
+				return
 			}
-		}(imageData, filename)
+			// Upload succeeded and record saved. Remove local file to save disk space.
+			if removeErr := os.Remove(localPath); removeErr != nil && !os.IsNotExist(removeErr) {
+				if e.Logger != nil {
+					e.Logger.Warning("failed to remove local file after cloud upload", "path", localPath, "error", removeErr)
+				}
+			}
+		}(imageData, filename, filePath)
 	}
 
 	if baseURL == "" {
