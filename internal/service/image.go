@@ -336,9 +336,17 @@ func (s *ImageService) ListImages(baseURL, startDate, endDate string, scope Imag
 		}
 		thumb := s.thumbnailInfo(rel, info)
 		storageLocation := "local"
+		var cloudURL string
+		var encrypted bool
 		if s.cloudStorageRef != nil {
 			if record, _ := s.cloudStorageRef.GetRecord(context.Background(), rel); record != nil && record.StorageLocation == "cloud" {
 				storageLocation = "cloud"
+				cloudURL = record.CloudURL
+				encrypted = record.EncryptKey != ""
+				if record.DirectURL != "" {
+					cloudURL = record.DirectURL
+					encrypted = false
+				}
 			}
 		}
 		item := map[string]any{
@@ -350,6 +358,10 @@ func (s *ImageService) ListImages(baseURL, startDate, endDate string, scope Imag
 			"created_at":       info.ModTime().Format("2006-01-02 15:04:05"),
 			"visibility":       meta.Visibility,
 			"storage_location": storageLocation,
+		}
+		if cloudURL != "" {
+			item["cloud_url"] = cloudURL
+			item["encrypted"] = encrypted
 		}
 		addImageMetadataFields(item, meta, imageMetadataFieldOptions{
 			BaseURL:                baseURL,

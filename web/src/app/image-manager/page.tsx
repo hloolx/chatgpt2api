@@ -1657,12 +1657,12 @@ function ImageManagerContent({
                           type="button"
                           onClick={(event) => {
                             event.currentTarget.blur();
-                            void navigator.clipboard.writeText(item.url);
-                            toast.success("图片地址已复制");
+                            void navigator.clipboard.writeText(item.cloud_url || item.url);
+                            toast.success(item.cloud_url ? "云链接已复制" : "图片地址已复制");
                           }}
                           className="inline-flex size-7 items-center justify-center rounded-full bg-white/95 text-stone-800 shadow-sm transition hover:bg-white hover:text-stone-950"
-                          aria-label="复制图片地址"
-                          title="复制图片地址"
+                          aria-label={item.cloud_url ? "复制云链接" : "复制图片地址"}
+                          title={item.cloud_url ? "复制云链接" : "复制图片地址"}
                         >
                           <Copy className="size-3.5" />
                         </button>
@@ -1738,7 +1738,7 @@ function ImageManagerContent({
                             variant={item.storage_location === "local" ? "success" : "default"}
                             className="mt-0.5 h-4 px-1.5 text-[9px] font-semibold"
                           >
-                            {item.storage_location === "local" ? "本地" : "云端"}
+                            {item.storage_location === "local" ? "本地" : item.encrypted ? "云端(加密)" : "云端"}
                           </Badge>
                         ) : null}
                         <div className="mt-0.5 truncate text-[11px] text-white/90">{item.created_at}</div>

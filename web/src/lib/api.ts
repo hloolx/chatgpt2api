@@ -265,6 +265,8 @@ export type ManagedImage = {
   owner_name?: string;
   visibility: ImageVisibility;
   storage_location?: string;
+  cloud_url?: string;
+  encrypted?: boolean;
   prompt?: string;
   model?: ImageModel;
   quality?: ImageQuality;

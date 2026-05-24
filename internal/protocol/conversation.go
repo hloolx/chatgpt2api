@@ -1058,8 +1058,13 @@ func (e *Engine) formatImageResultWithOptions(items []map[string]any, prompt, re
 			}
 		}
 		outputFormat := NormalizeImageOutputFormat(itemOptions.Format)
-		urlValue := e.SaveImageBytesForOwnerWithFormat(imageBytes, baseURL, ownerID, ownerName, outputFormat)
-		responseItem := map[string]any{"url": urlValue, "revised_prompt": revised, "output_format": outputFormat}
+		saved := e.SaveImageBytesForOwnerWithFormat(imageBytes, baseURL, ownerID, ownerName, outputFormat)
+		responseItem := map[string]any{"url": saved.URL, "revised_prompt": revised, "output_format": outputFormat}
+		if saved.CloudURL != "" {
+			responseItem["cloud_url"] = saved.CloudURL
+			responseItem["storage_type"] = saved.StorageType
+			responseItem["encrypted"] = saved.Encrypted
+		}
 		if responseFormat == "b64_json" {
 			responseItem["b64_json"] = base64.StdEncoding.EncodeToString(imageBytes)
 		}
@@ -1075,15 +1080,23 @@ func (e *Engine) formatImageResultWithOptions(items []map[string]any, prompt, re
 	return result, nil
 }
 
-func (e *Engine) SaveImageBytes(imageData []byte, baseURL string) string {
-	return e.SaveImageBytesForOwner(imageData, baseURL, "", "")
+// savedImageResult holds the result of saving an image, including cloud storage metadata.
+type savedImageResult struct {
+	URL         string // Primary URL: DirectURL for S3 Direct, local proxy for encrypted
+	CloudURL    string // Raw cloud storage URL (empty if no cloud storage)
+	StorageType string // "local" or "cloud"
+	Encrypted   bool   // Whether the cloud URL content is encrypted
 }
 
-func (e *Engine) SaveImageBytesForOwner(imageData []byte, baseURL, ownerID, ownerName string) string {
+func (e *Engine) SaveImageBytes(imageData []byte, baseURL string) string {
+	return e.SaveImageBytesForOwner(imageData, baseURL, "", "").URL
+}
+
+func (e *Engine) SaveImageBytesForOwner(imageData []byte, baseURL, ownerID, ownerName string) savedImageResult {
 	return e.SaveImageBytesForOwnerWithFormat(imageData, baseURL, ownerID, ownerName, "png")
 }
 
-func (e *Engine) SaveImageBytesForOwnerWithFormat(imageData []byte, baseURL, ownerID, ownerName, outputFormat string) string {
+func (e *Engine) SaveImageBytesForOwnerWithFormat(imageData []byte, baseURL, ownerID, ownerName, outputFormat string) savedImageResult {
 	outputFormat = NormalizeImageOutputFormat(outputFormat)
 	sum := md5.Sum(imageData)
 	filename := fmt.Sprintf("%d_%s.%s", time.Now().Unix(), hex.EncodeToString(sum[:]), imageFileExtension(outputFormat))
@@ -1096,37 +1109,45 @@ func (e *Engine) SaveImageBytesForOwnerWithFormat(imageData []byte, baseURL, own
 	_ = os.WriteFile(filePath, imageData, 0o644)
 	e.writeImageOwnerMetadata(rel, ownerID, ownerName)
 
-	// Cloud storage: upload immediately (sync). On success, delete local file.
-	if e.CloudStorage != nil && e.CloudStorage.Enabled() {
-		go func(data []byte, fname string, localPath string) {
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
-			record, err := e.CloudStorage.UploadImage(ctx, data, fname)
-			if err != nil {
-				if e.Logger != nil {
-					e.Logger.Warning("cloud upload failed, keeping local file", "filename", fname, "error", err)
-				}
-				return
-			}
-			if err := e.CloudStorage.SaveRecord(ctx, rel, record); err != nil {
-				if e.Logger != nil {
-					e.Logger.Warning("cloud record save failed", "filename", fname, "error", err)
-				}
-				return
-			}
-			// Upload succeeded and record saved. Remove local file to save disk space.
-			if removeErr := os.Remove(localPath); removeErr != nil && !os.IsNotExist(removeErr) {
-				if e.Logger != nil {
-					e.Logger.Warning("failed to remove local file after cloud upload", "path", localPath, "error", removeErr)
-				}
-			}
-		}(imageData, filename, filePath)
-	}
-
 	if baseURL == "" {
 		baseURL = e.Config.BaseURL()
 	}
-	return strings.TrimRight(baseURL, "/") + "/images/" + filepath.ToSlash(rel)
+	localURL := strings.TrimRight(baseURL, "/") + "/images/" + filepath.ToSlash(rel)
+
+	// Cloud storage: upload synchronously and return cloud metadata.
+	result := savedImageResult{URL: localURL, StorageType: "local"}
+	if e.CloudStorage != nil && e.CloudStorage.Enabled() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		record, err := e.CloudStorage.UploadImage(ctx, imageData, filename)
+		if err != nil {
+			if e.Logger != nil {
+				e.Logger.Warning("cloud upload failed, keeping local file", "filename", filename, "error", err)
+			}
+			return result
+		}
+		if err := e.CloudStorage.SaveRecord(ctx, rel, record); err != nil {
+			if e.Logger != nil {
+				e.Logger.Warning("cloud record save failed", "filename", filename, "error", err)
+			}
+			return result
+		}
+		// Upload succeeded and record saved. Remove local file to save disk space.
+		if removeErr := os.Remove(filePath); removeErr != nil && !os.IsNotExist(removeErr) {
+			if e.Logger != nil {
+				e.Logger.Warning("failed to remove local file after cloud upload", "path", filePath, "error", removeErr)
+			}
+		}
+		result.StorageType = "cloud"
+		result.CloudURL = record.CloudURL
+		result.Encrypted = record.EncryptKey != ""
+		if record.DirectURL != "" {
+			// S3 Direct mode: return the public S3 URL as primary URL
+			result.URL = record.DirectURL
+		}
+		// Encrypted mode: keep local proxy URL as primary (server decrypts on access)
+	}
+	return result
 }
 
 func imageFileExtension(outputFormat string) string {
