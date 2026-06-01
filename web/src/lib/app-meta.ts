@@ -7,6 +7,7 @@ import {
   normalizeLoginPageImageTransform,
   type LoginPageImageMode,
 } from "./login-page-image-layout";
+import type { ImageVisibility } from "./api";
 
 export const APP_META_UPDATED_EVENT = "chatgpt2api:app-meta-updated";
 export const DEFAULT_LOGIN_PAGE_IMAGE = "/login-panel-illustration.svg";
@@ -14,6 +15,7 @@ export const DEFAULT_LOGIN_PAGE_IMAGE = "/login-panel-illustration.svg";
 export type AppMeta = {
   app_title: string;
   project_name: string;
+  default_image_visibility: ImageVisibility;
   login_page_image_url: string;
   login_page_image_mode: LoginPageImageMode;
   login_page_image_zoom: number;
@@ -24,6 +26,7 @@ export type AppMeta = {
 export const defaultAppMeta: AppMeta = {
   app_title: "chatgpt2api",
   project_name: "chatgpt2api",
+  default_image_visibility: "private",
   login_page_image_url: "",
   login_page_image_mode: "contain",
   login_page_image_zoom: LOGIN_PAGE_IMAGE_DEFAULT_TRANSFORM.zoom,
@@ -50,6 +53,7 @@ export function normalizeAppMeta(data: Partial<AppMeta> = {}): AppMeta {
     app_title: typeof data.app_title === "string" && data.app_title.trim() ? data.app_title.trim() : defaultAppMeta.app_title,
     project_name:
       typeof data.project_name === "string" && data.project_name.trim() ? data.project_name.trim() : defaultAppMeta.project_name,
+    default_image_visibility: data.default_image_visibility === "public" ? "public" : "private",
     login_page_image_url: typeof data.login_page_image_url === "string" ? data.login_page_image_url : "",
     login_page_image_mode: normalizeLoginPageImageMode(data.login_page_image_mode),
     login_page_image_zoom: transform.zoom,

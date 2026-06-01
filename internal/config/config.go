@@ -31,6 +31,8 @@ var settingEnvKeys = map[string]string{
 	"default_subscription_period":       "CHATGPT2API_DEFAULT_SUBSCRIPTION_PERIOD",
 	"image_retention_days":              "CHATGPT2API_IMAGE_RETENTION_DAYS",
 	"image_storage_limit_mb":            "CHATGPT2API_IMAGE_STORAGE_LIMIT_MB",
+	"force_image_url_response":          "CHATGPT2API_FORCE_IMAGE_URL_RESPONSE",
+	"default_image_visibility":          "CHATGPT2API_DEFAULT_IMAGE_VISIBILITY",
 	"auto_remove_invalid_accounts":      "CHATGPT2API_AUTO_REMOVE_INVALID_ACCOUNTS",
 	"auto_remove_rate_limited_accounts": "CHATGPT2API_AUTO_REMOVE_RATE_LIMITED_ACCOUNTS",
 	"log_retention_days":                "CHATGPT2API_LOG_RETENTION_DAYS",
@@ -216,6 +218,14 @@ func (s *Store) ImageStorageLimitBytes() int64 {
 		return 0
 	}
 	return int64(mb) * 1024 * 1024
+}
+
+func (s *Store) ForceImageURLResponse() bool {
+	return util.ToBool(s.settingValue("force_image_url_response", false))
+}
+
+func (s *Store) DefaultImageVisibility() string {
+	return normalizeImageVisibility(s.settingValue("default_image_visibility", "private"))
 }
 
 func (s *Store) LogRetentionDays() int {
@@ -542,6 +552,8 @@ func (s *Store) Get() map[string]any {
 	data["default_subscription_period"] = s.DefaultSubscriptionPeriod()
 	data["image_retention_days"] = s.ImageRetentionDays()
 	data["image_storage_limit_mb"] = s.ImageStorageLimitMB()
+	data["force_image_url_response"] = s.ForceImageURLResponse()
+	data["default_image_visibility"] = s.DefaultImageVisibility()
 	data["log_retention_days"] = s.LogRetentionDays()
 	data["auto_remove_invalid_accounts"] = s.AutoRemoveInvalidAccounts()
 	data["auto_remove_rate_limited_accounts"] = s.AutoRemoveRateLimitedAccounts()
@@ -646,6 +658,9 @@ func (s *Store) Update(data map[string]any) (map[string]any, error) {
 	}
 	if value, ok := next["cloud_storage_uploader"]; ok {
 		next["cloud_storage_uploader"] = normalizeCloudStorageUploader(value)
+	}
+	if value, ok := next["default_image_visibility"]; ok {
+		next["default_image_visibility"] = normalizeImageVisibility(value)
 	}
 	next["update_repo"] = normalizeUpdateRepo(util.ValueOr(next["update_repo"], "ZyphrZero/chatgpt2api"))
 	if err := s.validateSettingsUpdateLocked(next); err != nil {
@@ -983,6 +998,15 @@ func normalizeCloudStorageUploader(value any) string {
 		return "s3"
 	default:
 		return "auto"
+	}
+}
+
+func normalizeImageVisibility(value any) string {
+	switch strings.ToLower(strings.TrimSpace(fmt.Sprint(value))) {
+	case "public":
+		return "public"
+	default:
+		return "private"
 	}
 }
 

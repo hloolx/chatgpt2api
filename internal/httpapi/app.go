@@ -190,8 +190,9 @@ func (a *App) handleImageGenerations(w http.ResponseWriter, r *http.Request) {
 	body["owner_id"] = identityScope(identity)
 	body["owner_name"] = identityDisplayName(identity)
 	body["base_url"] = a.resolveImageBaseURL(r)
+	a.applyImageResponseFormatPolicy(body)
 	a.attachCreationTaskLimiter(body, identity)
-	visibility, err := service.NormalizeImageVisibility(util.Clean(body["visibility"]))
+	visibility, err := a.imageRequestVisibility(body)
 	if err != nil {
 		util.WriteError(w, http.StatusBadRequest, err.Error())
 		return
@@ -228,9 +229,10 @@ func (a *App) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 	body["owner_id"] = identityScope(identity)
 	body["owner_name"] = identityDisplayName(identity)
 	body["base_url"] = a.resolveImageBaseURL(r)
+	a.applyImageResponseFormatPolicy(body)
 	a.attachCreationTaskLimiter(body, identity)
 	body["images"] = images
-	visibility, err := service.NormalizeImageVisibility(util.Clean(body["visibility"]))
+	visibility, err := a.imageRequestVisibility(body)
 	if err != nil {
 		util.WriteError(w, http.StatusBadRequest, err.Error())
 		return
@@ -323,6 +325,7 @@ func (a *App) writeProtocol(w http.ResponseWriter, r *http.Request, result map[s
 		return
 	}
 	if stream == nil {
+		result = a.sanitizeProtocolResult(endpoint, result)
 		urls := collectURLs(result)
 		a.recordProtocolGeneratedImages(identity, urls, visibility, imagePayloads...)
 		a.logCall(identity, summary, r.Method, endpoint, model, start, "success", http.StatusOK, "", urls, requestCapture)
@@ -336,6 +339,7 @@ func (a *App) writeProtocol(w http.ResponseWriter, r *http.Request, result map[s
 	if stream.Kind == "anthropic" || sseKind == "anthropic" {
 		var urls []string
 		for item := range stream.Items {
+			item = a.sanitizeProtocolResult(endpoint, item)
 			urls = append(urls, collectURLs(item)...)
 			event := firstNonEmpty(util.Clean(item["type"]), "message_delta")
 			fmt.Fprintf(w, "event: %s\n", event)
@@ -363,6 +367,7 @@ func (a *App) writeProtocol(w http.ResponseWriter, r *http.Request, result map[s
 	}
 	var urls []string
 	for item := range stream.Items {
+		item = a.sanitizeProtocolResult(endpoint, item)
 		urls = append(urls, collectURLs(item)...)
 		fmt.Fprintf(w, "data: %s\n\n", jsonString(item))
 		if flusher != nil {
@@ -380,6 +385,76 @@ func (a *App) writeProtocol(w http.ResponseWriter, r *http.Request, result map[s
 		markRequestBusinessLogged(r)
 	}
 	fmt.Fprint(w, "data: [DONE]\n\n")
+}
+
+func (a *App) applyImageResponseFormatPolicy(body map[string]any) {
+	if body == nil || a == nil || a.config == nil || !a.config.ForceImageURLResponse() {
+		return
+	}
+	body["response_format"] = "url"
+}
+
+func (a *App) imageRequestVisibility(body map[string]any) (string, error) {
+	if body == nil {
+		return service.ImageVisibilityPrivate, nil
+	}
+	visibility := util.Clean(body["visibility"])
+	if visibility == "" && a != nil && a.config != nil {
+		visibility = a.config.DefaultImageVisibility()
+	}
+	normalized, err := service.NormalizeImageVisibility(visibility)
+	if err != nil {
+		return "", err
+	}
+	body["visibility"] = normalized
+	return normalized, nil
+}
+
+func (a *App) sanitizeProtocolResult(endpoint string, result map[string]any) map[string]any {
+	if result == nil || !a.shouldForceImageURLResponse(endpoint) {
+		return result
+	}
+	if sanitized, ok := stripB64JSON(result).(map[string]any); ok {
+		return sanitized
+	}
+	return result
+}
+
+func (a *App) shouldForceImageURLResponse(endpoint string) bool {
+	if endpoint != "/v1/images/generations" && endpoint != "/v1/images/edits" {
+		return false
+	}
+	return a != nil && a.config != nil && a.config.ForceImageURLResponse()
+}
+
+func stripB64JSON(value any) any {
+	switch x := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for key, item := range x {
+			if key == "b64_json" {
+				continue
+			}
+			out[key] = stripB64JSON(item)
+		}
+		return out
+	case []map[string]any:
+		out := make([]map[string]any, 0, len(x))
+		for _, item := range x {
+			if sanitized, ok := stripB64JSON(item).(map[string]any); ok {
+				out = append(out, sanitized)
+			}
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(x))
+		for _, item := range x {
+			out = append(out, stripB64JSON(item))
+		}
+		return out
+	default:
+		return value
+	}
 }
 
 func protocolErrorHTTPStatus(err error) int {
@@ -568,6 +643,7 @@ func (a *App) handleAppMeta(w http.ResponseWriter, r *http.Request) {
 	util.WriteJSON(w, http.StatusOK, map[string]any{
 		"app_title":                   "chatgpt2api",
 		"project_name":                "chatgpt2api",
+		"default_image_visibility":    a.config.DefaultImageVisibility(),
 		"login_page_image_url":        a.config.LoginPageImageURL(),
 		"login_page_image_mode":       a.config.LoginPageImageMode(),
 		"login_page_image_zoom":       a.config.LoginPageImageZoom(),

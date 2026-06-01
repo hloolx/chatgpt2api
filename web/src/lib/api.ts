@@ -229,6 +229,8 @@ export type SettingsConfig = {
   default_subscription_period?: BillingPeriod;
   image_retention_days?: number | string;
   image_storage_limit_mb?: number | string;
+  force_image_url_response?: boolean;
+  default_image_visibility?: ImageVisibility;
   log_retention_days?: number | string;
   auto_remove_invalid_accounts?: boolean;
   auto_remove_rate_limited_accounts?: boolean;
@@ -886,7 +888,7 @@ export async function createImageGenerationTask(
   quality?: ImageQuality,
   count = 1,
   messages?: CreationTaskMessage[],
-  visibility: ImageVisibility = "private",
+  visibility?: ImageVisibility,
   imageResolution?: string,
   outputFormat?: ImageOutputFormat,
   outputCompression?: number,
@@ -913,7 +915,7 @@ export async function createImageGenerationTask(
       ...(toolOptions?.style ? { style: toolOptions.style } : {}),
       ...(typeof toolOptions?.partialImages === "number" ? { partial_images: toolOptions.partialImages } : {}),
       ...(messages?.length ? { messages } : {}),
-      visibility,
+      ...(visibility ? { visibility } : {}),
       n: count,
     },
   });
@@ -928,7 +930,7 @@ export async function createImageEditTask(
   quality?: ImageQuality,
   count = 1,
   messages?: CreationTaskMessage[],
-  visibility: ImageVisibility = "private",
+  visibility?: ImageVisibility,
   imageResolution?: string,
   outputFormat?: ImageOutputFormat,
   outputCompression?: number,
@@ -984,7 +986,9 @@ export async function createImageEditTask(
   if (messages?.length) {
     formData.append("messages", JSON.stringify(messages));
   }
-  formData.append("visibility", visibility);
+  if (visibility) {
+    formData.append("visibility", visibility);
+  }
   formData.append("n", String(count));
 
   return httpRequest<CreationTask>("/api/creation-tasks/image-edits", {

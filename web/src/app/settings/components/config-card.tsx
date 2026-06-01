@@ -123,20 +123,39 @@ function NumberInputWithUnit({
 
 function ConfigOption({
   checked,
+  description,
   label,
   onCheckedChange,
+  valueLabel,
 }: {
   checked: boolean;
+  description?: string;
   label: string;
   onCheckedChange: (checked: boolean) => void;
+  valueLabel?: string;
 }) {
   return (
-    <label className="flex min-h-10 min-w-0 items-center gap-2.5 rounded-[12px] border border-border/70 bg-background/75 px-3 py-2 text-sm font-medium text-foreground">
+    <label className="flex min-h-16 min-w-0 items-start gap-3 rounded-[12px] border border-border/70 bg-background/75 px-3 py-3 text-sm text-foreground transition-colors hover:border-border hover:bg-background">
       <Checkbox
+        className="mt-0.5"
         checked={checked}
         onCheckedChange={(value) => onCheckedChange(Boolean(value))}
       />
-      <span className="min-w-0 leading-5">{label}</span>
+      <span className="flex min-w-0 flex-1 flex-col gap-1">
+        <span className="flex min-w-0 flex-wrap items-center gap-2">
+          <span className="min-w-0 font-medium leading-5">{label}</span>
+          {valueLabel ? (
+            <span className="rounded-full border border-border/70 bg-muted px-2 py-0.5 text-[11px] font-medium leading-4 text-muted-foreground">
+              {valueLabel}
+            </span>
+          ) : null}
+        </span>
+        {description ? (
+          <span className="text-xs leading-5 text-muted-foreground">
+            {description}
+          </span>
+        ) : null}
+      </span>
     </label>
   );
 }
@@ -177,6 +196,12 @@ export function ConfigCard() {
   );
   const setImageStorageLimitMb = useSettingsStore(
     (state) => state.setImageStorageLimitMb,
+  );
+  const setForceImageUrlResponse = useSettingsStore(
+    (state) => state.setForceImageUrlResponse,
+  );
+  const setDefaultImageVisibility = useSettingsStore(
+    (state) => state.setDefaultImageVisibility,
   );
   const setAutoRemoveInvalidAccounts = useSettingsStore(
     (state) => state.setAutoRemoveInvalidAccounts,
@@ -323,6 +348,24 @@ export function ConfigCard() {
                 unit="秒"
               />
             </Field>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <ConfigOption
+              checked={Boolean(config?.force_image_url_response)}
+              onCheckedChange={setForceImageUrlResponse}
+              label="强制图片接口返回 URL"
+              valueLabel={config?.force_image_url_response ? "URL" : "按请求"}
+              description="开启后即使调用方请求 b64_json，也会按 URL 返回，方便下游程序直接下载。"
+            />
+            <ConfigOption
+              checked={config?.default_image_visibility === "public"}
+              onCheckedChange={(checked) =>
+                setDefaultImageVisibility(checked ? "public" : "private")
+              }
+              label="生成图片默认公开访问"
+              valueLabel={config?.default_image_visibility === "public" ? "public" : "private"}
+              description="开启后未显式传 visibility 的新图片可免 Authorization 访问；显式传 private 仍保持私有。"
+            />
           </div>
         </section>
 

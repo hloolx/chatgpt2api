@@ -68,6 +68,7 @@ import {
   type ImageVisibility,
 } from "@/lib/api";
 import { fetchAuthenticatedImageBlob } from "@/lib/authenticated-image";
+import { useAppMeta } from "@/lib/use-app-meta";
 import { clearImageManagerCache } from "@/lib/image-manager-cache";
 import { getManagedImagePathFromUrl } from "@/lib/image-path";
 import { authSessionFromLoginResponse, setVerifiedAuthSession } from "@/lib/session";
@@ -193,6 +194,7 @@ type ComposerMode = "chat" | "image";
 
 
 function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof useAuthGuard>["session"]> }) {
+  const appMeta = useAppMeta();
   const isSubmitDispatchingRef = useRef(false);
   const retryingImageIdsRef = useRef(new Set<string>());
   const cancelledTurnIdsRef = useRef(new Set<string>());
@@ -218,7 +220,7 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
   const [imageOutputFormat, setImageOutputFormat] = useState<ImageOutputFormat>(getStoredImageOutputFormat);
   const [imageOutputCompression, setImageOutputCompression] = useState(getStoredImageOutputCompression);
   const [keepInputsAfterSubmit, setKeepInputsAfterSubmit] = useState(getStoredKeepInputsAfterSubmit);
-  const [defaultImageVisibility, setDefaultImageVisibility] = useState<ImageVisibility>("private");
+  const [defaultImageVisibility, setDefaultImageVisibility] = useState<ImageVisibility>(() => appMeta.default_image_visibility);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isPromptMarketOpen, setIsPromptMarketOpen] = useState(false);
   const [referenceImages, setReferenceImages] = useState<StoredReferenceImage[]>([]);
@@ -242,6 +244,10 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
     shareReferenceImages: false,
   });
   const canInspectAccounts = session.role === "admin" || session.apiPermissions.includes("get/api/accounts");
+
+  useEffect(() => {
+    setDefaultImageVisibility(appMeta.default_image_visibility);
+  }, [appMeta.default_image_visibility]);
 
   const parsedCount = useMemo(() => normalizeRequestedImageCount(imageCount), [imageCount]);
   const imageSize = useMemo(
@@ -505,7 +511,7 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
     setImageCustomHeight(sizeSelection.customHeight);
     setImageOutputFormat(outputFormat);
     setImageOutputCompression(reusableOutputCompressionValue(intent.outputCompression, outputFormat));
-    setDefaultImageVisibility("private");
+    setDefaultImageVisibility(appMeta.default_image_visibility);
     setReferenceImages([]);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -552,7 +558,7 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
       .finally(() => {
         toast.dismiss(toastId);
       });
-  }, [isLoadingHistory]);
+  }, [appMeta.default_image_visibility, isLoadingHistory]);
 
   useEffect(() => {
     if (!selectedConversationId) {
@@ -723,8 +729,8 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
     setImageCount("1");
     setImageOutputFormat(DEFAULT_IMAGE_OUTPUT_FORMAT);
     setImageOutputCompression("");
-    setDefaultImageVisibility("private");
-  }, [keepInputsAfterSubmit]);
+    setDefaultImageVisibility(appMeta.default_image_visibility);
+  }, [appMeta.default_image_visibility, keepInputsAfterSubmit]);
 
   const resetComposer = useCallback(() => {
     clearComposerInputs();
@@ -734,7 +740,6 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
     setComposerMode(mode);
     if (mode === "chat") {
       promptApplyRequestIdRef.current += 1;
-      setDefaultImageVisibility("private");
     }
   }, []);
 
@@ -760,7 +765,7 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
     setImageCustomHeight(presetSizeSelection.customHeight);
     setImageOutputFormat(DEFAULT_IMAGE_OUTPUT_FORMAT);
     setImageOutputCompression("");
-    setDefaultImageVisibility("private");
+    setDefaultImageVisibility(appMeta.default_image_visibility);
     setReferenceImages([]);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -785,7 +790,7 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
       toast.dismiss(toastId);
       toast.error("已套用提示词，但参考图读取失败");
     }
-  }, []);
+  }, [appMeta.default_image_visibility]);
 
   const handleApplyMarketPrompt = useCallback(async (prompt: BananaPrompt) => {
     const referenceImageUrls = getPromptReferenceImageUrls(prompt);
@@ -804,7 +809,7 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
     setImageCustomHeight(DEFAULT_IMAGE_CUSTOM_HEIGHT);
     setImageOutputFormat(DEFAULT_IMAGE_OUTPUT_FORMAT);
     setImageOutputCompression("");
-    setDefaultImageVisibility("private");
+    setDefaultImageVisibility(appMeta.default_image_visibility);
     setReferenceImages([]);
     setIsPromptMarketOpen(false);
     if (fileInputRef.current) {
@@ -837,7 +842,7 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
     } else {
       toast.error("已套用提示词，但参考图读取失败");
     }
-  }, []);
+  }, [appMeta.default_image_visibility]);
 
   const handleDeleteConversation = async (id: string) => {
     const nextConversations = conversations.filter((item) => item.id !== id);

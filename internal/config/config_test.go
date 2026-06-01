@@ -18,6 +18,8 @@ func TestStoreUpdatePersistsRuntimeSettings(t *testing.T) {
 	unsetEnv(t, "CHATGPT2API_USER_DEFAULT_RPM_LIMIT")
 	unsetEnv(t, "CHATGPT2API_IMAGE_RETENTION_DAYS")
 	unsetEnv(t, "CHATGPT2API_IMAGE_STORAGE_LIMIT_MB")
+	unsetEnv(t, "CHATGPT2API_FORCE_IMAGE_URL_RESPONSE")
+	unsetEnv(t, "CHATGPT2API_DEFAULT_IMAGE_VISIBILITY")
 	unsetEnv(t, "CHATGPT2API_LOG_RETENTION_DAYS")
 	unsetEnv(t, "CHATGPT2API_AUTO_REMOVE_INVALID_ACCOUNTS")
 	unsetEnv(t, "CHATGPT2API_AUTO_REMOVE_RATE_LIMITED_ACCOUNTS")
@@ -40,6 +42,8 @@ func TestStoreUpdatePersistsRuntimeSettings(t *testing.T) {
 		"user_default_rpm_limit":          30,
 		"image_retention_days":            14,
 		"image_storage_limit_mb":          512,
+		"force_image_url_response":        true,
+		"default_image_visibility":        "public",
 		"log_retention_days":              21,
 		"registration_enabled":            true,
 		"log_levels":                      []any{"debug", "error"},
@@ -51,6 +55,14 @@ func TestStoreUpdatePersistsRuntimeSettings(t *testing.T) {
 		t.Fatalf("BaseURL() = %q", store.BaseURL())
 	}
 	assertConfigValue(t, got, "registration_enabled", true)
+	assertConfigValue(t, got, "force_image_url_response", true)
+	assertConfigValue(t, got, "default_image_visibility", "public")
+	if !store.ForceImageURLResponse() {
+		t.Fatal("ForceImageURLResponse() = false, want true")
+	}
+	if store.DefaultImageVisibility() != "public" {
+		t.Fatalf("DefaultImageVisibility() = %q, want public", store.DefaultImageVisibility())
+	}
 	if _, ok := got["image_concurrent_limit"]; ok {
 		t.Fatalf("removed image_concurrent_limit leaked in config response: %#v", got)
 	}
@@ -69,6 +81,8 @@ func TestStoreUpdatePersistsRuntimeSettings(t *testing.T) {
 		"CHATGPT2API_USER_DEFAULT_RPM_LIMIT=30",
 		"CHATGPT2API_IMAGE_RETENTION_DAYS=14",
 		"CHATGPT2API_IMAGE_STORAGE_LIMIT_MB=512",
+		"CHATGPT2API_FORCE_IMAGE_URL_RESPONSE=true",
+		"CHATGPT2API_DEFAULT_IMAGE_VISIBILITY=public",
 		"CHATGPT2API_LOG_RETENTION_DAYS=21",
 		"CHATGPT2API_REGISTRATION_ENABLED=true",
 		"CHATGPT2API_LOG_LEVELS=debug,error",
@@ -79,6 +93,46 @@ func TestStoreUpdatePersistsRuntimeSettings(t *testing.T) {
 	}
 	if strings.Contains(envText, "CHATGPT2API_IMAGE_CONCURRENT_LIMIT") {
 		t.Fatalf(".env persisted removed image concurrent limit:\n%s", envText)
+	}
+}
+
+func TestStoreNormalizesDefaultImageVisibility(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("CHATGPT2API_ROOT", root)
+	unsetEnv(t, "CHATGPT2API_DEFAULT_IMAGE_VISIBILITY")
+	unsetLinuxDoEnv(t)
+
+	store, err := NewStore()
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	if store.DefaultImageVisibility() != "private" {
+		t.Fatalf("default DefaultImageVisibility() = %q, want private", store.DefaultImageVisibility())
+	}
+
+	got, err := store.Update(map[string]any{"default_image_visibility": "public"})
+	if err != nil {
+		t.Fatalf("Update(public) error = %v", err)
+	}
+	assertConfigValue(t, got, "default_image_visibility", "public")
+	if gotEnv := os.Getenv("CHATGPT2API_DEFAULT_IMAGE_VISIBILITY"); gotEnv != "public" {
+		t.Fatalf("CHATGPT2API_DEFAULT_IMAGE_VISIBILITY = %q, want public", gotEnv)
+	}
+
+	got, err = store.Update(map[string]any{"default_image_visibility": "shared"})
+	if err != nil {
+		t.Fatalf("Update(invalid) error = %v", err)
+	}
+	assertConfigValue(t, got, "default_image_visibility", "private")
+	if store.DefaultImageVisibility() != "private" {
+		t.Fatalf("DefaultImageVisibility() = %q, want private", store.DefaultImageVisibility())
+	}
+	envData, err := os.ReadFile(filepath.Join(root, ".env"))
+	if err != nil {
+		t.Fatalf("read .env: %v", err)
+	}
+	if !strings.Contains(string(envData), "CHATGPT2API_DEFAULT_IMAGE_VISIBILITY=private") {
+		t.Fatalf(".env missing normalized default image visibility:\n%s", string(envData))
 	}
 }
 

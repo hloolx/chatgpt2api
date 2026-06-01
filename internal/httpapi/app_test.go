@@ -969,6 +969,133 @@ func TestProtocolImageBillingStandardBalanceBoundary(t *testing.T) {
 	}
 }
 
+func TestProtocolImageForceURLResponseOverridesB64JSON(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+	if _, err := app.config.Update(map[string]any{"force_image_url_response": true}); err != nil {
+		t.Fatalf("Update() force_image_url_response error = %v", err)
+	}
+	_, rawKey, err := app.auth.CreateAPIKey(service.AuthRoleUser, "url-response-user", service.AuthOwner{})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+	var gotResponseFormats []string
+	installHTTPTestImageStreamFunc(t, app, func(ctx context.Context, client *backend.Client, request protocol.ConversationRequest, index, total int) (<-chan protocol.ImageOutput, <-chan error) {
+		gotResponseFormats = append(gotResponseFormats, request.ResponseFormat)
+		return httpTestImageOutputStream(request, index)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"draw","model":"gpt-image-2","n":1,"response_format":"b64_json"}`))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("image generation status = %d body = %s", res.Code, res.Body.String())
+	}
+	if len(gotResponseFormats) != 1 || gotResponseFormats[0] != "url" {
+		t.Fatalf("upstream response formats = %#v, want [url]", gotResponseFormats)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response json: %v", err)
+	}
+	data := util.AsMapSlice(body["data"])
+	if len(data) != 1 {
+		t.Fatalf("response data = %#v, want one item", body["data"])
+	}
+	if util.Clean(data[0]["url"]) != "https://example.test/1.png" {
+		t.Fatalf("response url = %#v", data[0]["url"])
+	}
+	if _, ok := data[0]["b64_json"]; ok {
+		t.Fatalf("b64_json leaked with force URL response enabled: %#v", data[0])
+	}
+}
+
+func TestProtocolImageDefaultVisibilityPublicAllowsAnonymousDownload(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+	if _, err := app.config.Update(map[string]any{"default_image_visibility": service.ImageVisibilityPublic}); err != nil {
+		t.Fatalf("Update() default_image_visibility error = %v", err)
+	}
+	_, rawKey, err := app.auth.CreateAPIKey(service.AuthRoleUser, "public-image-user", service.AuthOwner{})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+	installHTTPTestLocalImageStream(t, app)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"draw","model":"gpt-image-2","n":1,"response_format":"url"}`))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("image generation status = %d body = %s", res.Code, res.Body.String())
+	}
+	imagePath := responseImageRequestPath(t, res.Body.Bytes())
+
+	req = httptest.NewRequest(http.MethodGet, imagePath, nil)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("anonymous default-public image status = %d body = %q", res.Code, res.Body.String())
+	}
+}
+
+func TestProtocolImageExplicitPrivateOverridesDefaultPublic(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+	if _, err := app.config.Update(map[string]any{"default_image_visibility": service.ImageVisibilityPublic}); err != nil {
+		t.Fatalf("Update() default_image_visibility error = %v", err)
+	}
+	_, rawKey, err := app.auth.CreateAPIKey(service.AuthRoleUser, "private-image-user", service.AuthOwner{})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+	installHTTPTestLocalImageStream(t, app)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"draw","model":"gpt-image-2","n":1,"response_format":"url","visibility":"private"}`))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("image generation status = %d body = %s", res.Code, res.Body.String())
+	}
+	imagePath := responseImageRequestPath(t, res.Body.Bytes())
+
+	req = httptest.NewRequest(http.MethodGet, imagePath, nil)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous explicit-private image status = %d body = %q, want 401", res.Code, res.Body.String())
+	}
+}
+
+func TestCreationTaskUsesDefaultImageVisibility(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+	if _, err := app.config.Update(map[string]any{"default_image_visibility": service.ImageVisibilityPublic}); err != nil {
+		t.Fatalf("Update() default_image_visibility error = %v", err)
+	}
+	_, rawKey, err := app.auth.CreateAPIKey(service.AuthRoleUser, "task-visibility-user", service.AuthOwner{})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/creation-tasks/image-generations", strings.NewReader(`{"client_task_id":"default-visibility-task","prompt":"draw"}`))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("submit creation task status = %d body = %s", res.Code, res.Body.String())
+	}
+	var task map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &task); err != nil {
+		t.Fatalf("task json: %v", err)
+	}
+	if task["visibility"] != service.ImageVisibilityPublic {
+		t.Fatalf("task visibility = %#v, want public", task["visibility"])
+	}
+}
+
 func TestProtocolImageBillingRejectsBeforeUpstream(t *testing.T) {
 	app := newTestAppWithBillingDefaults(t, service.BillingTypeStandard, "3", "0", service.BillingPeriodMonthly)
 	defer app.Close()
@@ -3862,6 +3989,8 @@ func newTestAppWithBillingDefaults(t *testing.T, billingType, standardBalance, s
 	t.Setenv("CHATGPT2API_DEFAULT_SUBSCRIPTION_QUOTA", subscriptionQuota)
 	t.Setenv("CHATGPT2API_DEFAULT_SUBSCRIPTION_PERIOD", subscriptionPeriod)
 	unsetTestEnv(t, "CHATGPT2API_REGISTRATION_ENABLED")
+	unsetTestEnv(t, "CHATGPT2API_FORCE_IMAGE_URL_RESPONSE")
+	unsetTestEnv(t, "CHATGPT2API_DEFAULT_IMAGE_VISIBILITY")
 	t.Setenv("STORAGE_BACKEND", "sqlite")
 	t.Setenv("DATABASE_URL", "")
 	app, err := NewApp()
@@ -3878,6 +4007,13 @@ func installHTTPTestImageStream(t *testing.T, app *App) {
 	t.Helper()
 	installHTTPTestImageStreamFunc(t, app, func(ctx context.Context, client *backend.Client, request protocol.ConversationRequest, index, total int) (<-chan protocol.ImageOutput, <-chan error) {
 		return httpTestImageOutputStream(request, index)
+	})
+}
+
+func installHTTPTestLocalImageStream(t *testing.T, app *App) {
+	t.Helper()
+	installHTTPTestImageStreamFunc(t, app, func(ctx context.Context, client *backend.Client, request protocol.ConversationRequest, index, total int) (<-chan protocol.ImageOutput, <-chan error) {
+		return httpTestLocalImageOutputStream(t, app, request, index)
 	})
 }
 
@@ -3910,6 +4046,59 @@ func httpTestImageOutputStream(request protocol.ConversationRequest, index int) 
 	errCh <- nil
 	close(errCh)
 	return out, errCh
+}
+
+func httpTestLocalImageOutputStream(t *testing.T, app *App, request protocol.ConversationRequest, index int) (<-chan protocol.ImageOutput, <-chan error) {
+	t.Helper()
+	rel := filepath.ToSlash(filepath.Join("2026", "06", "02", fmt.Sprintf("local-%d.png", index)))
+	imagePath := filepath.Join(app.config.ImagesDir(), filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatalf("mkdir local image: %v", err)
+	}
+	if err := writeHTTPTestPNG(imagePath); err != nil {
+		t.Fatalf("write local image: %v", err)
+	}
+	baseURL := strings.TrimRight(request.BaseURL, "/")
+	if baseURL == "" {
+		baseURL = "http://example.com"
+	}
+	out := make(chan protocol.ImageOutput, 1)
+	errCh := make(chan error, 1)
+	out <- protocol.ImageOutput{
+		Kind:    "result",
+		Model:   request.Model,
+		Index:   index,
+		Total:   request.N,
+		Created: int64(index),
+		Data: []map[string]any{{
+			"url": baseURL + "/images/" + rel,
+		}},
+	}
+	close(out)
+	errCh <- nil
+	close(errCh)
+	return out, errCh
+}
+
+func responseImageRequestPath(t *testing.T, data []byte) string {
+	t.Helper()
+	var body map[string]any
+	if err := json.Unmarshal(data, &body); err != nil {
+		t.Fatalf("response json: %v", err)
+	}
+	items := util.AsMapSlice(body["data"])
+	if len(items) != 1 {
+		t.Fatalf("response data = %#v, want one item", body["data"])
+	}
+	rawURL := util.Clean(items[0]["url"])
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse image url %q: %v", rawURL, err)
+	}
+	if parsed.RequestURI() == "" {
+		t.Fatalf("image url has empty request path: %q", rawURL)
+	}
+	return parsed.RequestURI()
 }
 
 func httpTestMessageOnlyImageOutputStream(request protocol.ConversationRequest, index int) (<-chan protocol.ImageOutput, <-chan error) {

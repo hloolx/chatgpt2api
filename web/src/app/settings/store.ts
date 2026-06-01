@@ -28,6 +28,7 @@ import {
   type CPARemoteFile,
   type ImageStorageCleanupResult,
   type ImageStorageGovernanceSummary,
+  type ImageVisibility,
   type LogCleanupResult,
   type LogGovernanceSummary,
   type LoginPageImageSettings,
@@ -57,6 +58,10 @@ function normalizeDefaultSubscriptionPeriod(value: unknown): BillingPeriod {
   return "monthly";
 }
 
+function normalizeImageVisibility(value: unknown): ImageVisibility {
+  return value === "public" ? "public" : "private";
+}
+
 function normalizeConfig(config: SettingsConfig): SettingsConfig {
   const loginImageTransform = normalizeLoginPageImageTransform({
     zoom: Number(config.login_page_image_zoom),
@@ -75,6 +80,8 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
     default_subscription_period: normalizeDefaultSubscriptionPeriod(config.default_subscription_period),
     image_retention_days: Number(config.image_retention_days || 30),
     image_storage_limit_mb: Math.max(0, Number(config.image_storage_limit_mb) || 0),
+    force_image_url_response: Boolean(config.force_image_url_response),
+    default_image_visibility: normalizeImageVisibility(config.default_image_visibility),
     log_retention_days: Number(config.log_retention_days || 7),
     auto_remove_invalid_accounts: Boolean(config.auto_remove_invalid_accounts),
     auto_remove_rate_limited_accounts: Boolean(config.auto_remove_rate_limited_accounts),
@@ -182,6 +189,8 @@ type SettingsStore = {
   setDefaultSubscriptionPeriod: (value: BillingPeriod) => void;
   setImageRetentionDays: (value: string) => void;
   setImageStorageLimitMb: (value: string) => void;
+  setForceImageUrlResponse: (value: boolean) => void;
+  setDefaultImageVisibility: (value: ImageVisibility) => void;
   setLogRetentionDays: (value: string) => void;
   setAutoRemoveInvalidAccounts: (value: boolean) => void;
   setAutoRemoveRateLimitedAccounts: (value: boolean) => void;
@@ -337,6 +346,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         default_subscription_period: normalizeDefaultSubscriptionPeriod(config.default_subscription_period),
         image_retention_days: Math.max(1, Number(config.image_retention_days) || 30),
         image_storage_limit_mb: Math.max(0, Number(config.image_storage_limit_mb) || 0),
+        force_image_url_response: Boolean(config.force_image_url_response),
+        default_image_visibility: normalizeImageVisibility(config.default_image_visibility),
         log_retention_days: Math.min(3650, Math.max(1, Number(config.log_retention_days) || 7)),
         auto_remove_invalid_accounts: Boolean(config.auto_remove_invalid_accounts),
         auto_remove_rate_limited_accounts: Boolean(config.auto_remove_rate_limited_accounts),
@@ -361,8 +372,12 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       delete payload.update_github_token_configured;
 
       const data = await updateSettingsConfig(payload);
+      const nextConfig = normalizeConfig(data.config);
       set({
-        config: normalizeConfig(data.config),
+        config: nextConfig,
+      });
+      dispatchAppMetaUpdated({
+        default_image_visibility: normalizeImageVisibility(nextConfig.default_image_visibility),
       });
       toast.success("配置已保存");
     } catch (error) {
@@ -392,6 +407,14 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   setImageStorageLimitMb: (value) => {
     set((state) => state.config ? { config: { ...state.config, image_storage_limit_mb: value } } : {});
+  },
+
+  setForceImageUrlResponse: (value) => {
+    set((state) => state.config ? { config: { ...state.config, force_image_url_response: value } } : {});
+  },
+
+  setDefaultImageVisibility: (value) => {
+    set((state) => state.config ? { config: { ...state.config, default_image_visibility: normalizeImageVisibility(value) } } : {});
   },
 
   setLogRetentionDays: (value) => {

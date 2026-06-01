@@ -309,6 +309,9 @@ go build -tags=embed -ldflags "-X chatgpt2api/internal/version.Version=1.0.0" -o
 | `CHATGPT2API_USER_DEFAULT_CONCURRENT_LIMIT` | `0` | 普通用户默认创作并发额度；图片生成/编辑按请求张数计入，聊天任务按 1 个计入；`0` 表示不限制 |
 | `CHATGPT2API_USER_DEFAULT_RPM_LIMIT` | `0` | 普通用户默认创作任务 RPM 限制，`0` 表示不限制 |
 | `CHATGPT2API_IMAGE_RETENTION_DAYS` | `30` | 服务端缓存图片保留天数 |
+| `CHATGPT2API_IMAGE_STORAGE_LIMIT_MB` | `0` | 图片库总容量上限，单位 MB；`0` 表示不按容量自动清理 |
+| `CHATGPT2API_FORCE_IMAGE_URL_RESPONSE` | `false` | 是否强制图片接口返回 URL 并移除响应中的 `b64_json` |
+| `CHATGPT2API_DEFAULT_IMAGE_VISIBILITY` | `private` | 图片生成默认可见性：`private` 需要认证，`public` 裸链接可访问 |
 | `CHATGPT2API_LOG_RETENTION_DAYS` | `7` | 业务日志保留天数 |
 | `CHATGPT2API_AUTO_REMOVE_INVALID_ACCOUNTS` | `true` | 是否自动移除失效账号 |
 | `CHATGPT2API_AUTO_REMOVE_RATE_LIMITED_ACCOUNTS` | `false` | 是否自动移除限流账号 |
