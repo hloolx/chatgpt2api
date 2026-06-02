@@ -677,13 +677,14 @@ func TestStreamImageOutputsWithPoolRunsRequestedImagesConcurrently(t *testing.T)
 	}
 }
 
-func TestStreamImageOutputsWithPoolCancelsWorkersWithoutClosedChannelSend(t *testing.T) {
+func TestStreamImageOutputsWithPoolKeepsSiblingWorkerAfterPartialFailure(t *testing.T) {
 	engine := &Engine{
 		ImageTokenProvider: func(context.Context) (string, error) { return "test-token", nil },
 		ImageClientFactory: func(string) *backend.Client { return nil },
 	}
 
 	secondStarted := make(chan struct{})
+	firstFailed := make(chan struct{})
 	releaseSecond := make(chan struct{})
 	engine.StreamImageOutputsFunc = func(ctx context.Context, client *backend.Client, request ConversationRequest, index, total int) (<-chan ImageOutput, <-chan error) {
 		out := make(chan ImageOutput, 1)
@@ -696,6 +697,7 @@ func TestStreamImageOutputsWithPoolCancelsWorkersWithoutClosedChannelSend(t *tes
 				case <-secondStarted:
 				case <-ctx.Done():
 				}
+				close(firstFailed)
 				errCh <- fmt.Errorf("content policy blocked this image")
 			}()
 			return out, errCh
@@ -709,6 +711,10 @@ func TestStreamImageOutputsWithPoolCancelsWorkersWithoutClosedChannelSend(t *tes
 				close(secondStarted)
 			}
 			<-releaseSecond
+			if err := ctx.Err(); err != nil {
+				errCh <- err
+				return
+			}
 			out <- ImageOutput{
 				Kind:    "result",
 				Model:   request.Model,
@@ -732,9 +738,15 @@ func TestStreamImageOutputsWithPoolCancelsWorkersWithoutClosedChannelSend(t *tes
 	case <-time.After(time.Second):
 		t.Fatal("second image worker did not start")
 	}
-	time.Sleep(120 * time.Millisecond)
+	select {
+	case <-firstFailed:
+	case <-time.After(time.Second):
+		t.Fatal("first image worker did not fail")
+	}
 	close(releaseSecond)
-	for range outputs {
+	var data []map[string]any
+	for output := range outputs {
+		data = append(data, output.Data...)
 	}
 	err := <-errCh
 	if err == nil {
@@ -742,6 +754,9 @@ func TestStreamImageOutputsWithPoolCancelsWorkersWithoutClosedChannelSend(t *tes
 	}
 	if errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "触发安全审核或内容政策限制") {
 		t.Fatalf("err = %v, want original Chinese moderation failure", err)
+	}
+	if len(data) != 1 || data[0]["url"] != imageURLForIndex(2) {
+		t.Fatalf("partial data = %#v, want sibling result", data)
 	}
 }
 

@@ -1160,6 +1160,62 @@ func TestProtocolImageForceURLResponseOverridesB64JSON(t *testing.T) {
 	}
 }
 
+func TestProtocolImageForceURLResponseReturnsPartialDataAfterTextFailure(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+	if _, err := app.config.Update(map[string]any{"force_image_url_response": true}); err != nil {
+		t.Fatalf("Update() force_image_url_response error = %v", err)
+	}
+	_, rawKey, err := app.auth.CreateAPIKey(service.AuthRoleUser, "partial-url-user", service.AuthOwner{})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+	var mu sync.Mutex
+	var gotResponseFormats []string
+	installHTTPTestImageStreamFunc(t, app, func(ctx context.Context, client *backend.Client, request protocol.ConversationRequest, index, total int) (<-chan protocol.ImageOutput, <-chan error) {
+		mu.Lock()
+		gotResponseFormats = append(gotResponseFormats, request.ResponseFormat)
+		mu.Unlock()
+		if index == 2 {
+			return httpTestMessageOnlyImageOutputStream(request, index)
+		}
+		return httpTestImageOutputStream(request, index)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"draw","model":"gpt-image-2","n":2,"response_format":"b64_json"}`))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("image generation status = %d body = %s", res.Code, res.Body.String())
+	}
+	mu.Lock()
+	formats := append([]string(nil), gotResponseFormats...)
+	mu.Unlock()
+	if len(formats) != 3 {
+		t.Fatalf("upstream response format calls = %#v, want success plus text retry", formats)
+	}
+	for _, format := range formats {
+		if format != "url" {
+			t.Fatalf("upstream response formats = %#v, want forced url", formats)
+		}
+	}
+	var body map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response json: %v", err)
+	}
+	data := util.AsMapSlice(body["data"])
+	if len(data) != 1 {
+		t.Fatalf("response data = %#v, want one successful image", body["data"])
+	}
+	if util.Clean(data[0]["url"]) != "https://example.test/1.png" {
+		t.Fatalf("response url = %#v", data[0]["url"])
+	}
+	if _, ok := data[0]["b64_json"]; ok {
+		t.Fatalf("b64_json leaked with force URL response enabled: %#v", data[0])
+	}
+}
+
 func TestProtocolImageDefaultVisibilityPublicAllowsAnonymousDownload(t *testing.T) {
 	app := newTestApp(t)
 	defer app.Close()

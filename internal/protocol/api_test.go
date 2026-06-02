@@ -593,6 +593,32 @@ func TestCollectImageOutputsMarksTextResponse(t *testing.T) {
 	}
 }
 
+func TestCollectImageOutputsReturnsPartialDataOnError(t *testing.T) {
+	outputs := make(chan ImageOutput, 1)
+	outputs <- ImageOutput{
+		Kind:    "result",
+		Index:   2,
+		Created: 123,
+		Data:    []map[string]any{{"url": "https://example.test/partial.png"}},
+	}
+	close(outputs)
+	errCh := make(chan error, 1)
+	errCh <- &ImageGenerationError{Message: "text response", StatusCode: 400, Type: "invalid_request_error", Code: "image_generation_text_response"}
+	close(errCh)
+
+	result, err := (&Engine{}).CollectImageOutputs(outputs, errCh)
+	if err != nil {
+		t.Fatalf("CollectImageOutputs() err = %v, want partial data success", err)
+	}
+	data := util.AsMapSlice(result["data"])
+	if len(data) != 1 || data[0]["url"] != "https://example.test/partial.png" {
+		t.Fatalf("data = %#v, want partial image", result["data"])
+	}
+	if result["output_type"] == "text" {
+		t.Fatalf("output_type = %#v, want image result", result["output_type"])
+	}
+}
+
 func TestStreamTextResponseEventsPropagatesUpstreamError(t *testing.T) {
 	deltas := make(chan string, 1)
 	upstreamErr := make(chan error, 1)

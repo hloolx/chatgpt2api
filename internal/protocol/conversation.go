@@ -221,6 +221,7 @@ type ImageGenerationError struct {
 
 type imageRunResult struct {
 	emitted         bool
+	emittedResult   bool
 	returnedMessage bool
 	lastError       string
 	err             error
@@ -508,13 +509,15 @@ func (e *Engine) StreamImageOutputsWithPool(ctx context.Context, request Convers
 				defer wg.Done()
 				releaseSlot, err := request.acquireImageOutputSlot(ctx, index)
 				if err != nil {
-					cancel()
+					if request.N == 1 {
+						cancel()
+					}
 					resultCh <- imageRunResult{lastError: err.Error(), err: err}
 					return
 				}
 				defer releaseSlot()
 				result := e.runSingleImageOutput(ctx, out, request, index)
-				if result.err != nil {
+				if result.err != nil && request.N == 1 {
 					cancel()
 				}
 				resultCh <- result
@@ -526,11 +529,13 @@ func (e *Engine) StreamImageOutputsWithPool(ctx context.Context, request Convers
 		}()
 
 		emittedAny := false
+		emittedResult := false
 		messageOnly := false
 		lastError := ""
 		var firstErr error
 		for result := range resultCh {
 			emittedAny = emittedAny || result.emitted
+			emittedResult = emittedResult || result.emittedResult
 			messageOnly = messageOnly || result.returnedMessage
 			if result.lastError != "" {
 				lastError = result.lastError
@@ -539,7 +544,9 @@ func (e *Engine) StreamImageOutputsWithPool(ctx context.Context, request Convers
 				if firstErr == nil || isContextCancelError(firstErr) && !isContextCancelError(result.err) {
 					firstErr = result.err
 				}
-				cancel()
+				if request.N == 1 {
+					cancel()
+				}
 			}
 		}
 		if firstErr != nil {
@@ -550,7 +557,7 @@ func (e *Engine) StreamImageOutputsWithPool(ctx context.Context, request Convers
 			errCh <- nil
 			return
 		}
-		if !emittedAny {
+		if !emittedAny || !emittedResult {
 			errCh <- NewImageGenerationError(imageStreamErrorMessage(lastError))
 			return
 		}
@@ -638,6 +645,7 @@ func (e *Engine) runSingleImageOutput(ctx context.Context, out chan<- ImageOutpu
 				}
 			}
 			result.emitted = true
+			result.emittedResult = result.emittedResult || output.Kind == "result"
 			emittedForToken = true
 			returnedMessage = output.Kind == "message"
 			returnedResult = returnedResult || output.Kind == "result"
@@ -1011,6 +1019,9 @@ func (e *Engine) CollectImageOutputsWithProgress(outputs <-chan ImageOutput, err
 		}
 	}
 	if streamErr != nil {
+		if len(data) > 0 {
+			return result, nil
+		}
 		if imageErr, ok := streamErr.(*ImageGenerationError); ok && imageErr.Code == "image_generation_text_response" {
 			result["output_type"] = "text"
 		}
