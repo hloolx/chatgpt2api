@@ -198,6 +198,10 @@ func (a *App) handleImageGenerations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	model := firstNonEmpty(util.Clean(body["model"]), util.ImageModelAuto)
+	if err := validateImageCount(body); err != nil {
+		a.writeProtocolError(w, err)
+		return
+	}
 	if err := a.checkProtocolBilling(identity, protocolBillableUnits("/v1/images/generations", body)); err != nil {
 		a.writeProtocol(w, r, nil, nil, err, "openai", "/v1/images/generations", model, identity, "文生图", visibility, service.BillingReference{})
 		return
@@ -218,8 +222,8 @@ func (a *App) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if n := util.ToInt(body["n"], 1); n < 1 || n > 4 {
-		util.WriteError(w, http.StatusBadRequest, "n must be between 1 and 4")
+	if err := validateImageCount(body); err != nil {
+		a.writeProtocolError(w, err)
 		return
 	}
 	if len(images) == 0 {
@@ -262,6 +266,12 @@ func (a *App) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	body["owner_name"] = identityDisplayName(identity)
 	a.attachCreationTaskLimiter(body, identity)
 	model := firstNonEmpty(util.Clean(body["model"]), "auto")
+	if protocol.IsImageChatRequest(body) {
+		if err := validateImageCount(body); err != nil {
+			a.writeProtocolError(w, err)
+			return
+		}
+	}
 	if err := a.checkProtocolBilling(identity, protocolBillableUnits("/v1/chat/completions", body)); err != nil {
 		a.writeProtocol(w, r, nil, nil, err, "openai", "/v1/chat/completions", model, identity, "文本生成", service.ImageVisibilityPrivate, service.BillingReference{})
 		return
@@ -286,6 +296,12 @@ func (a *App) handleResponses(w http.ResponseWriter, r *http.Request) {
 	body["owner_name"] = identityDisplayName(identity)
 	a.attachCreationTaskLimiter(body, identity)
 	model := firstNonEmpty(util.Clean(body["model"]), "auto")
+	if protocol.HasResponseImageGenerationTool(body) {
+		if err := validateImageCount(body); err != nil {
+			a.writeProtocolError(w, err)
+			return
+		}
+	}
 	if err := a.checkProtocolBilling(identity, protocolBillableUnits("/v1/responses", body)); err != nil {
 		a.writeProtocol(w, r, nil, nil, err, "openai", "/v1/responses", model, identity, "Responses", service.ImageVisibilityPrivate, service.BillingReference{})
 		return
@@ -392,6 +408,11 @@ func (a *App) applyImageResponseFormatPolicy(body map[string]any) {
 		return
 	}
 	body["response_format"] = "url"
+}
+
+func validateImageCount(body map[string]any) error {
+	_, err := protocol.ParseImageCount(body["n"])
+	return err
 }
 
 func (a *App) imageRequestVisibility(body map[string]any) (string, error) {
@@ -2024,8 +2045,8 @@ func normalizedProtocolImageCount(value any) int {
 	if n < 1 {
 		return 1
 	}
-	if n > 4 {
-		return 4
+	if n > util.MaxImageCount {
+		return util.MaxImageCount
 	}
 	return n
 }

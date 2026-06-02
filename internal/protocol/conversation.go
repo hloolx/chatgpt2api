@@ -85,6 +85,7 @@ type ConversationRequest struct {
 }
 
 func (r ConversationRequest) Normalized() ConversationRequest {
+	r.Prompt = imageGenerationPromptWithDirective(r.Prompt)
 	r.Size = NormalizeImageGenerationSize(r.Size)
 	r.Quality = ImageQualityForModel(r.Model, r.Quality)
 	r.OutputFormat = NormalizeImageOutputFormat(r.OutputFormat)
@@ -527,6 +528,7 @@ func (e *Engine) StreamImageOutputsWithPool(ctx context.Context, request Convers
 		emittedAny := false
 		messageOnly := false
 		lastError := ""
+		var firstErr error
 		for result := range resultCh {
 			emittedAny = emittedAny || result.emitted
 			messageOnly = messageOnly || result.returnedMessage
@@ -534,9 +536,15 @@ func (e *Engine) StreamImageOutputsWithPool(ctx context.Context, request Convers
 				lastError = result.lastError
 			}
 			if result.err != nil {
-				errCh <- result.err
-				return
+				if firstErr == nil || isContextCancelError(firstErr) && !isContextCancelError(result.err) {
+					firstErr = result.err
+				}
+				cancel()
 			}
+		}
+		if firstErr != nil {
+			errCh <- firstErr
+			return
 		}
 		if messageOnly {
 			errCh <- nil
@@ -570,11 +578,21 @@ func noopImageOutputSlotRelease() {}
 func (e *Engine) runSingleImageOutput(ctx context.Context, out chan<- ImageOutput, request ConversationRequest, index int) imageRunResult {
 	result := imageRunResult{}
 	transientAttempts := 0
+	retryUsed := false
 	for {
+		if err := ctx.Err(); err != nil {
+			result.lastError = err.Error()
+			result.err = err
+			return result
+		}
 		token, err := e.nextImageAccessToken(ctx)
 		if err != nil {
 			result.lastError = err.Error()
-			result.err = NewImageGenerationError(err.Error())
+			if isContextCancelError(err) {
+				result.err = err
+			} else {
+				result.err = imageGenerationFailureError(err.Error())
+			}
 			return result
 		}
 		emittedForToken := false
@@ -582,9 +600,15 @@ func (e *Engine) runSingleImageOutput(ctx context.Context, out chan<- ImageOutpu
 		returnedResult := false
 		rateLimitedForToken := false
 		rateLimitMessage := ""
+		textResponseMessage := ""
 		client := e.newImageClient(token)
 		outputs, imageErr := e.StreamImageOutputs(ctx, client, request, index, request.N)
 		for output := range outputs {
+			if err := ctx.Err(); err != nil {
+				result.lastError = err.Error()
+				result.err = err
+				return result
+			}
 			if output.Kind == "message" && service.IsAccountRateLimitedErrorMessage(output.Text) {
 				rateLimitedForToken = true
 				rateLimitMessage = output.Text
@@ -595,9 +619,10 @@ func (e *Engine) runSingleImageOutput(ctx context.Context, out chan<- ImageOutpu
 				if e.Accounts != nil {
 					e.Accounts.MarkImageResult(token, false)
 				}
-				result.err = &ImageGenerationError{Message: firstNonEmpty(output.Text, "Image generation returned a text response instead of image data."), StatusCode: 400, Type: "invalid_request_error", Code: "image_generation_text_response"}
-				result.lastError = result.err.Error()
-				return result
+				textResponseMessage = imageTextResponseFailureMessage(output.Text)
+				result.lastError = textResponseMessage
+				returnedMessage = true
+				continue
 			}
 			if output.Kind == "result" && request.ChargeImageOutput != nil && !output.ChargeHandled {
 				if err := request.ChargeImageOutput(index); err != nil {
@@ -616,22 +641,55 @@ func (e *Engine) runSingleImageOutput(ctx context.Context, out chan<- ImageOutpu
 			emittedForToken = true
 			returnedMessage = output.Kind == "message"
 			returnedResult = returnedResult || output.Kind == "result"
-			out <- output
+			if err := sendImageOutput(ctx, out, output); err != nil {
+				result.lastError = err.Error()
+				result.err = err
+				return result
+			}
 		}
 		err = <-imageErr
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			result.lastError = ctxErr.Error()
+			result.err = ctxErr
+			return result
+		}
+		if textResponseMessage != "" && !returnedResult {
+			if !retryUsed {
+				retryUsed = true
+				request = imageGenerationRetryRequest(request, textResponseMessage)
+				continue
+			}
+			result.err = imageTextResponseError(textResponseMessage)
+			result.lastError = result.err.Error()
+			return result
+		}
 		if err == nil {
 			if rateLimitedForToken {
 				if e.Accounts != nil {
 					e.Accounts.MarkImageResult(token, false)
 					e.Accounts.ApplyAccountErrorMessage(token, "image_stream", rateLimitMessage)
+					continue
 				}
-				continue
+				result.err = imageGenerationFailureError(rateLimitMessage)
+				result.lastError = result.err.Error()
+				return result
 			}
 			if returnedMessage || !returnedResult {
 				if e.Accounts != nil {
 					e.Accounts.MarkImageResult(token, false)
 				}
-				result.returnedMessage = returnedMessage || !returnedResult
+				if returnedMessage && !request.MessageAsError {
+					result.returnedMessage = true
+					return result
+				}
+				result.lastError = "模型返回了文字，没有返回图片。"
+				if !retryUsed {
+					retryUsed = true
+					request = imageGenerationRetryRequest(request, result.lastError)
+					continue
+				}
+				result.err = imageTextResponseError(result.lastError)
+				result.lastError = result.err.Error()
 				return result
 			}
 			if e.Accounts != nil {
@@ -664,9 +722,25 @@ func (e *Engine) runSingleImageOutput(ctx context.Context, out chan<- ImageOutpu
 			transientAttempts++
 			continue
 		}
-		result.err = NewImageGenerationError(imageStreamErrorMessage(result.lastError))
+		result.err = imageGenerationFailureError(imageStreamErrorMessage(result.lastError))
 		return result
 	}
+}
+
+func sendImageOutput(ctx context.Context, out chan<- ImageOutput, output ImageOutput) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case out <- output:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func isContextCancelError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func (e *Engine) StreamImageOutputs(ctx context.Context, client *backend.Client, request ConversationRequest, index, total int) (<-chan ImageOutput, <-chan error) {
@@ -718,12 +792,18 @@ func (e *Engine) StreamResponsesImageOutputs(ctx context.Context, client *backen
 		seen := map[string]struct{}{}
 		for event := range events {
 			if event.PartialImage != "" {
-				out <- ImageOutput{Kind: "progress", Model: request.Model, Index: index, Total: total, Created: firstNonZeroInt64(event.Created, time.Now().Unix()), Text: event.Text, UpstreamEventType: event.Type}
+				if err := sendImageOutput(ctx, out, ImageOutput{Kind: "progress", Model: request.Model, Index: index, Total: total, Created: firstNonZeroInt64(event.Created, time.Now().Unix()), Text: event.Text, UpstreamEventType: event.Type}); err != nil {
+					errCh <- err
+					return
+				}
 				continue
 			}
 			if isFinalImageTextEvent(event) {
 				emitted = true
-				out <- ImageOutput{Kind: "message", Model: request.Model, Index: index, Total: total, Created: firstNonZeroInt64(event.Created, time.Now().Unix()), Text: strings.TrimSpace(event.Text), UpstreamEventType: event.Type}
+				if err := sendImageOutput(ctx, out, ImageOutput{Kind: "message", Model: request.Model, Index: index, Total: total, Created: firstNonZeroInt64(event.Created, time.Now().Unix()), Text: strings.TrimSpace(event.Text), UpstreamEventType: event.Type}); err != nil {
+					errCh <- err
+					return
+				}
 				continue
 			}
 			if event.Result == "" {
@@ -761,7 +841,10 @@ func (e *Engine) StreamResponsesImageOutputs(ctx context.Context, client *backen
 			data := util.AsMapSlice(result["data"])
 			if len(data) > 0 {
 				emitted = true
-				out <- ImageOutput{Kind: "result", Model: request.Model, Index: index, Total: total, Created: created, Data: data, ChargeHandled: chargeHandled}
+				if err := sendImageOutput(ctx, out, ImageOutput{Kind: "result", Model: request.Model, Index: index, Total: total, Created: created, Data: data, ChargeHandled: chargeHandled}); err != nil {
+					errCh <- err
+					return
+				}
 			}
 		}
 		if err := <-upstreamErr; err != nil {

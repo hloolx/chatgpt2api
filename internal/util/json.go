@@ -17,6 +17,8 @@ import (
 )
 
 const (
+	MaxImageCount = 10
+
 	ImageModelAuto      = "auto"
 	ImageModelGPT       = "gpt-image-2"
 	ImageModelCodex     = "codex-gpt-image-2"

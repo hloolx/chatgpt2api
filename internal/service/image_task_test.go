@@ -234,6 +234,26 @@ func TestImageTaskServicePassesImageToolOptionsToHandler(t *testing.T) {
 	waitForTaskStatus(t, svc, identity, "task-1", TaskStatusSuccess)
 }
 
+func TestImageTaskCountNormalizesToMaxImageCount(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload map[string]any
+		want    int
+	}{
+		{name: "default", payload: map[string]any{}, want: 1},
+		{name: "zero", payload: map[string]any{"n": 0}, want: 1},
+		{name: "allows max", payload: map[string]any{"n": util.MaxImageCount}, want: util.MaxImageCount},
+		{name: "clamps n above max", payload: map[string]any{"n": util.MaxImageCount + 1}, want: util.MaxImageCount},
+		{name: "clamps legacy count above max", payload: map[string]any{"count": util.MaxImageCount + 1}, want: util.MaxImageCount},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := imageTaskCount(tc.payload); got != tc.want {
+				t.Fatalf("imageTaskCount(%#v) = %d, want %d", tc.payload, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestImageTaskServiceSubmitsChatTasks(t *testing.T) {
 	handlerCalls := make(chan map[string]any, 1)
 	imageHandler := func(ctx context.Context, identity Identity, payload map[string]any) (map[string]any, error) {

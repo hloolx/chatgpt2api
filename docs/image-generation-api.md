@@ -35,7 +35,7 @@ Authorization: Bearer <session-or-api-token>
 | --- | --- | --- | --- | --- |
 | `prompt` | string | 无 | 全部 | 生图或编辑提示词。生成接口必填；编辑接口也建议必填。 |
 | `model` | string | `auto` | 全部 | 图片任务模型：`auto`、`gpt-image-2`、`codex-gpt-image-2`。 |
-| `n` | number | `1` | 全部 | 生成数量。同步接口要求 `1-4`；异步任务会归一化到 `1-4`。 |
+| `n` | number | `1` | 全部 | 生成数量。同步接口要求 `1-10`；异步任务会归一化到 `1-10`。 |
 | `size` | string | 空 | 全部 | 支持 `auto`、比例值、档位和显式尺寸。详见“尺寸”。 |
 | `quality` | string | 空 | 全部 | 可传 `low`、`medium`、`high`。当前前端不强制启用质量控制，部分链路仅作为提示或上游参数。 |
 | `response_format` | string | 同步为 `b64_json`，异步为 `url` | 同步、内部任务 payload | 同步接口可用 `b64_json`；异步任务固定面向 URL 结果。 |
@@ -453,7 +453,7 @@ OpenAI 风格图片错误：
 | `400` | JSON 解析失败 | `invalid json body` |
 | `400` | 缺少提示词 | `prompt is required` |
 | `400` | 异步任务缺少 ID | `client_task_id is required` |
-| `400` | `n` 超出范围 | `n must be between 1 and 4` |
+| `400` | `n` 超出范围 | `n must be between 1 and 10` |
 | `400` | 图生图缺少图片 | `image file is required` 或 `image is required` |
 | `400` | `messages` 表单字段不是 JSON | `invalid messages` |
 | `400` | 非法可见性 | `visibility must be private or public` |

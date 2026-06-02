@@ -28,7 +28,7 @@ import {
 
 export type CreationTaskDataItem = NonNullable<CreationTask["data"]>[number];
 
-export const IMAGE_TASK_IMAGE_COUNT = 4;
+export const IMAGE_TASK_IMAGE_COUNT = 10;
 
 export function isInvalidCustomRatioSelection(sizeMode: ImageSizeMode, aspectRatio: ImageAspectRatio, customRatio: string) {
   return sizeMode === "ratio" && aspectRatio === CUSTOM_IMAGE_ASPECT_RATIO && !parseImageRatio(customRatio);

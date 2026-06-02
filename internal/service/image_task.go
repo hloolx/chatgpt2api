@@ -964,8 +964,8 @@ func normalizedImageTaskCount(n int) int {
 	if n < 1 {
 		return 1
 	}
-	if n > 4 {
-		return 4
+	if n > util.MaxImageCount {
+		return util.MaxImageCount
 	}
 	return n
 }

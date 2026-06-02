@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"chatgpt2api/internal/util"
 )
 
 func ptrInt(value int) *int {
@@ -126,6 +128,32 @@ func TestBuildImagePromptIncludesThreeTwoAndQualityHints(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("image prompt missing %q: %s", want, prompt)
 		}
+	}
+}
+
+func TestConversationRequestNormalizesImageGenerationDirective(t *testing.T) {
+	tests := []struct {
+		name   string
+		prompt string
+		want   string
+	}{
+		{name: "chinese", prompt: "一只小猪喝酒", want: "生成图片：一只小猪喝酒"},
+		{name: "english", prompt: "a pig drinking wine", want: "Generate an image: a pig drinking wine"},
+		{name: "keeps chinese directive", prompt: "生成图片：一只小猪喝酒", want: "生成图片：一只小猪喝酒"},
+		{name: "keeps english directive", prompt: "Generate an image of a pig drinking wine", want: "Generate an image of a pig drinking wine"},
+		{name: "keeps draw directive", prompt: "draw a pig drinking wine", want: "draw a pig drinking wine"},
+		{name: "keeps draw punctuation", prompt: "Draw: a pig drinking wine", want: "Draw: a pig drinking wine"},
+		{name: "keeps generate image", prompt: "generate image of a pig drinking wine", want: "generate image of a pig drinking wine"},
+		{name: "keeps create image", prompt: "create image: pig drinking wine", want: "create image: pig drinking wine"},
+		{name: "mixed chinese with english style", prompt: "一只小猪喝酒 cyberpunk style trending on artstation", want: "生成图片：一只小猪喝酒 cyberpunk style trending on artstation"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := ConversationRequest{Prompt: tt.prompt}.Normalized()
+			if request.Prompt != tt.want {
+				t.Fatalf("Normalized().Prompt = %q, want %q", request.Prompt, tt.want)
+			}
+		})
 	}
 }
 
@@ -520,6 +548,32 @@ func TestStreamImageResponseErrorsWhenNoImageOutput(t *testing.T) {
 	}
 }
 
+func TestStreamImageResponseDrainsMultipleImageOutputs(t *testing.T) {
+	outputs := make(chan ImageOutput, 2)
+	outputs <- ImageOutput{Kind: "result", Data: []map[string]any{{"b64_json": "first", "revised_prompt": "first prompt"}}}
+	outputs <- ImageOutput{Kind: "result", Data: []map[string]any{{"b64_json": "second", "revised_prompt": "second prompt"}}}
+	close(outputs)
+
+	events, errCh := StreamImageResponse(outputs, "draw", "gpt-image-2")
+	var completed map[string]any
+	for event := range events {
+		if event["type"] == "response.completed" {
+			completed = event
+		}
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("StreamImageResponse() err = %v", err)
+	}
+	response := util.StringMap(completed["response"])
+	items := util.AsMapSlice(response["output"])
+	if len(items) != 2 {
+		t.Fatalf("completed output = %#v, want two image items", response["output"])
+	}
+	if items[0]["id"] != "ig_1" || items[1]["id"] != "ig_2" {
+		t.Fatalf("image ids = %#v %#v, want ig_1/ig_2", items[0]["id"], items[1]["id"])
+	}
+}
+
 func TestCollectImageOutputsMarksTextResponse(t *testing.T) {
 	outputs := make(chan ImageOutput)
 	close(outputs)
@@ -572,7 +626,7 @@ func TestHandleImageGenerationsValidatesPromptAndCount(t *testing.T) {
 		want string
 	}{
 		{name: "empty prompt", body: map[string]any{"n": 1}, want: "prompt is required"},
-		{name: "too many images", body: map[string]any{"prompt": "draw", "n": 5}, want: "n must be between 1 and 4"},
+		{name: "too many images", body: map[string]any{"prompt": "draw", "n": 11}, want: "n must be between 1 and 10"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, err := engine.HandleImageGenerations(context.Background(), tc.body)
@@ -584,6 +638,16 @@ func TestHandleImageGenerationsValidatesPromptAndCount(t *testing.T) {
 				t.Fatalf("HTTPError = %#v, want status 400 message %q", httpErr, tc.want)
 			}
 		})
+	}
+}
+
+func TestParseImageCountAllowsTenImages(t *testing.T) {
+	n, err := ParseImageCount(10)
+	if err != nil {
+		t.Fatalf("ParseImageCount(10) error = %v", err)
+	}
+	if n != 10 {
+		t.Fatalf("ParseImageCount(10) = %d, want 10", n)
 	}
 }
 

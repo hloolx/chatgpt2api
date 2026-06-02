@@ -528,7 +528,7 @@ curl http://localhost:3000/v1/images/generations \
 | --- | --- |
 | `model` | 图片模型，支持 `auto`、`gpt-image-2`、`codex-gpt-image-2` |
 | `prompt` | 图片生成提示词 |
-| `n` | 生成数量，当前限制为 `1-4` |
+| `n` | 生成数量，当前限制为 `1-10` |
 | `response_format` | 默认 `b64_json` |
 
 `gpt-image-2` 和 `auto` 走 ChatGPT 官网图片工作台的纯协议链路：当前按官网 HAR 实抓对齐到底层 `gpt-5-5` 模型，请求 `/backend-api/f/conversation` 建立 SSE，并从 `role=tool` 且 `async_task_type=image_gen` 的上游消息里提取图片结果。部分会话/续图场景里官网还会补发 `/backend-api/f/conversation/prepare` 获取 `conduit_token`，但不是每次首发生成前都显式出现。`codex-gpt-image-2` 仍保留为独立的 Codex 图片协议模型，继续走 `/backend-api/codex/responses` 路线，用于和官网图片额度区分。Free 账号不会被本地预先拦截；如果账号没有对应图片工具权限，上游可能直接返回失败。
@@ -552,7 +552,7 @@ curl http://localhost:3000/v1/images/edits \
 | --- | --- |
 | `model` | 图片模型，支持 `auto`、`gpt-image-2`、`codex-gpt-image-2` |
 | `prompt` | 图片编辑提示词 |
-| `n` | 生成数量，当前限制为 `1-4` |
+| `n` | 生成数量，当前限制为 `1-10` |
 | `image` | 参考图片，使用 multipart/form-data 上传 |
 
 图片编辑同样按模型分流：`gpt-image-2`、`auto` 走官网图片工作台纯协议链路，`codex-gpt-image-2` 走独立的 Codex 图片协议链路。

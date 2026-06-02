@@ -380,7 +380,7 @@ func (e *Engine) ImageChatResponse(ctx context.Context, body map[string]any) (ma
 		return nil, nil, err
 	}
 	size := util.Clean(body["size"])
-	request := ConversationRequest{Prompt: prompt, Model: model, Messages: messages, N: n, Size: size, Quality: util.Clean(body["quality"]), Background: util.Clean(body["background"]), Moderation: util.Clean(body["moderation"]), Style: util.Clean(body["style"]), ResponseFormat: "b64_json", OwnerID: util.Clean(body["owner_id"]), OwnerName: util.Clean(body["owner_name"]), Images: EncodeImages(images), InputImageMask: responseImageMask(body["input_image_mask"]), AcquireImageOutputSlot: imageOutputSlotAcquirer(body), ChargeImageOutput: imageOutputCharger(body)}
+	request := ConversationRequest{Prompt: prompt, Model: model, Messages: messages, N: n, Size: size, Quality: util.Clean(body["quality"]), Background: util.Clean(body["background"]), Moderation: util.Clean(body["moderation"]), Style: util.Clean(body["style"]), ResponseFormat: "b64_json", OwnerID: util.Clean(body["owner_id"]), OwnerName: util.Clean(body["owner_name"]), Images: EncodeImages(images), InputImageMask: responseImageMask(body["input_image_mask"]), MessageAsError: true, AcquireImageOutputSlot: imageOutputSlotAcquirer(body), ChargeImageOutput: imageOutputCharger(body)}
 	if partialImages, ok := normalizedPositiveInt(body["partial_images"]); ok {
 		request.PartialImages = &partialImages
 	}
@@ -406,7 +406,7 @@ func (e *Engine) ImageChatEvents(ctx context.Context, body map[string]any) (<-ch
 			return
 		}
 		size := util.Clean(body["size"])
-		request := ConversationRequest{Prompt: prompt, Model: model, Messages: messages, N: n, Size: size, Quality: util.Clean(body["quality"]), Background: util.Clean(body["background"]), Moderation: util.Clean(body["moderation"]), Style: util.Clean(body["style"]), ResponseFormat: "b64_json", OwnerID: util.Clean(body["owner_id"]), OwnerName: util.Clean(body["owner_name"]), Images: EncodeImages(images), InputImageMask: responseImageMask(body["input_image_mask"]), AcquireImageOutputSlot: imageOutputSlotAcquirer(body), ChargeImageOutput: imageOutputCharger(body)}
+		request := ConversationRequest{Prompt: prompt, Model: model, Messages: messages, N: n, Size: size, Quality: util.Clean(body["quality"]), Background: util.Clean(body["background"]), Moderation: util.Clean(body["moderation"]), Style: util.Clean(body["style"]), ResponseFormat: "b64_json", OwnerID: util.Clean(body["owner_id"]), OwnerName: util.Clean(body["owner_name"]), Images: EncodeImages(images), InputImageMask: responseImageMask(body["input_image_mask"]), MessageAsError: true, AcquireImageOutputSlot: imageOutputSlotAcquirer(body), ChargeImageOutput: imageOutputCharger(body)}
 		if partialImages, ok := normalizedPositiveInt(body["partial_images"]); ok {
 			request.PartialImages = &partialImages
 		}
@@ -502,8 +502,8 @@ func ImageResultContent(result map[string]any) string {
 
 func ParseImageCount(raw any) (int, error) {
 	value := util.ToInt(raw, 1)
-	if value < 1 || value > 4 {
-		return 0, HTTPError{Status: 400, Message: "n must be between 1 and 4"}
+	if value < 1 || value > util.MaxImageCount {
+		return 0, HTTPError{Status: 400, Message: fmt.Sprintf("n must be between 1 and %d", util.MaxImageCount)}
 	}
 	return value, nil
 }
@@ -753,6 +753,7 @@ func ResponseImageGenerationRequest(body map[string]any, scope string, previous 
 		OwnerName:      util.Clean(body["owner_name"]),
 		Images:         images,
 		InputImageMask: responseImageMask(firstNonNil(tool["input_image_mask"], body["input_image_mask"])),
+		MessageAsError: true,
 	}
 	if hasPartialImages {
 		request.PartialImages = &partialImages
@@ -869,29 +870,34 @@ func StreamImageResponse(outputs <-chan ImageOutput, prompt, model string) (<-ch
 		responseID := "resp_" + util.NewHex(32)
 		created := time.Now().Unix()
 		out <- ResponseCreated(responseID, model, created)
+		var responseOutput []map[string]any
 		for output := range outputs {
 			if output.Kind == "message" {
+				if len(responseOutput) > 0 {
+					continue
+				}
 				item := TextOutputItem(output.Text, "", "completed")
 				out <- map[string]any{"type": "response.output_text.delta", "item_id": item["id"], "output_index": 0, "content_index": 0, "delta": output.Text}
 				out <- map[string]any{"type": "response.output_text.done", "item_id": item["id"], "output_index": 0, "content_index": 0, "text": output.Text}
 				out <- map[string]any{"type": "response.output_item.done", "output_index": 0, "item": item}
-				out <- ResponseCompleted(responseID, model, created, []map[string]any{item})
-				errCh <- nil
-				return
+				responseOutput = append(responseOutput, item)
+				continue
 			}
 			if output.Kind != "result" {
 				continue
 			}
-			items := ImageOutputItems(prompt, output.Data, "")
-			if len(items) > 0 {
-				item := items[0]
-				out <- map[string]any{"type": "response.output_item.done", "output_index": 0, "item": item}
-				out <- ResponseCompleted(responseID, model, created, []map[string]any{item})
-				errCh <- nil
-				return
+			for _, item := range ImageOutputItems(prompt, output.Data, "") {
+				item["id"] = fmt.Sprintf("ig_%d", len(responseOutput)+1)
+				out <- map[string]any{"type": "response.output_item.done", "output_index": len(responseOutput), "item": item}
+				responseOutput = append(responseOutput, item)
 			}
 		}
-		errCh <- fmt.Errorf("upstream image stream completed without image output")
+		if len(responseOutput) == 0 {
+			errCh <- fmt.Errorf("upstream image stream completed without image output")
+			return
+		}
+		out <- ResponseCompleted(responseID, model, created, responseOutput)
+		errCh <- nil
 	}()
 	return out, errCh
 }

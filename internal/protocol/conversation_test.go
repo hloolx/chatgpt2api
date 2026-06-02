@@ -21,6 +21,7 @@ import (
 
 	"chatgpt2api/internal/backend"
 	"chatgpt2api/internal/service"
+	"chatgpt2api/internal/util"
 )
 
 type testProtocolImageConfig struct {
@@ -335,12 +336,14 @@ func TestImageStreamErrorMessage(t *testing.T) {
 	}
 }
 
-func TestHandleImageGenerationsReturnsUpstreamTextResponse(t *testing.T) {
+func TestHandleImageGenerationsReturnsChineseErrorAfterRepeatedTextResponse(t *testing.T) {
 	engine := &Engine{
 		ImageTokenProvider: func(context.Context) (string, error) { return "test-token", nil },
 		ImageClientFactory: func(string) *backend.Client { return nil },
 	}
+	calls := 0
 	engine.StreamImageOutputsFunc = func(ctx context.Context, client *backend.Client, request ConversationRequest, index, total int) (<-chan ImageOutput, <-chan error) {
+		calls++
 		out := make(chan ImageOutput, 1)
 		errCh := make(chan error, 1)
 		out <- ImageOutput{Kind: "message", Model: request.Model, Index: index, Total: total, Created: time.Now().Unix(), Text: "你好！我是 ChatGPT。", UpstreamEventType: "image_text_response"}
@@ -361,19 +364,22 @@ func TestHandleImageGenerationsReturnsUpstreamTextResponse(t *testing.T) {
 	if !errors.As(err, &imageErr) {
 		t.Fatalf("HandleImageGenerations() error = %T %v, want ImageGenerationError", err, err)
 	}
-	if imageErr.Code != "image_generation_text_response" || imageErr.Message != "你好！我是 ChatGPT。" {
+	if imageErr.Code != "image_generation_text_response" || !strings.Contains(imageErr.Message, "模型返回了文字，没有返回图片") {
 		t.Fatalf("image error = %#v", imageErr)
+	}
+	if calls != 2 {
+		t.Fatalf("stream calls = %d, want initial call plus one retry", calls)
 	}
 	if result["output_type"] != "text" {
 		t.Fatalf("output_type = %#v, want text in %#v", result["output_type"], result)
 	}
-	if result["message"] != "你好！我是 ChatGPT。" {
-		t.Fatalf("message = %#v, want upstream text", result["message"])
+	if !strings.Contains(util.Clean(result["message"]), "已自动重试一次仍未成功") {
+		t.Fatalf("message = %#v, want Chinese retry failure", result["message"])
 	}
 }
 
-func TestHandleImageGenerationsReturnsArbitraryUpstreamImageText(t *testing.T) {
-	const upstreamText = "上游返回的任何非排队文本都应该原样返回。"
+func TestHandleImageGenerationsTranslatesArbitraryUpstreamImageText(t *testing.T) {
+	const upstreamText = "上游返回的任何非排队文本都应该触发重试。"
 	engine := &Engine{
 		ImageTokenProvider: func(context.Context) (string, error) { return "test-token", nil },
 		ImageClientFactory: func(string) *backend.Client { return nil },
@@ -395,8 +401,93 @@ func TestHandleImageGenerationsReturnsArbitraryUpstreamImageText(t *testing.T) {
 	if err == nil {
 		t.Fatal("HandleImageGenerations() error = nil, want text-response image error")
 	}
-	if result["output_type"] != "text" || result["message"] != upstreamText {
-		t.Fatalf("result = %#v, want arbitrary upstream text response", result)
+	if result["output_type"] != "text" || !strings.Contains(util.Clean(result["message"]), "模型返回了文字，没有返回图片") {
+		t.Fatalf("result = %#v, want Chinese text-response failure", result)
+	}
+}
+
+func TestHandleImageGenerationsRetriesTextResponseOnce(t *testing.T) {
+	engine := &Engine{
+		ImageTokenProvider: func(context.Context) (string, error) { return "test-token", nil },
+		ImageClientFactory: func(string) *backend.Client { return nil },
+	}
+	var prompts []string
+	engine.StreamImageOutputsFunc = func(ctx context.Context, client *backend.Client, request ConversationRequest, index, total int) (<-chan ImageOutput, <-chan error) {
+		prompts = append(prompts, request.Prompt)
+		out := make(chan ImageOutput, 1)
+		errCh := make(chan error, 1)
+		if len(prompts) == 1 {
+			out <- ImageOutput{Kind: "message", Model: request.Model, Index: index, Total: total, Created: time.Now().Unix(), Text: "我是一个文字模型。", UpstreamEventType: "image_text_response"}
+		} else {
+			out <- ImageOutput{Kind: "result", Model: request.Model, Index: index, Total: total, Created: time.Now().Unix(), Data: []map[string]any{{"url": "https://example.test/retry.png"}}}
+		}
+		close(out)
+		errCh <- nil
+		close(errCh)
+		return out, errCh
+	}
+
+	result, _, err := engine.HandleImageGenerations(context.Background(), map[string]any{
+		"prompt":          "一只小猪喝酒",
+		"model":           "gpt-image-2",
+		"response_format": "url",
+	})
+	if err != nil {
+		t.Fatalf("HandleImageGenerations() error = %v", err)
+	}
+	data := util.AsMapSlice(result["data"])
+	if len(data) != 1 || data[0]["url"] != "https://example.test/retry.png" {
+		t.Fatalf("result data = %#v", result["data"])
+	}
+	if len(prompts) != 2 {
+		t.Fatalf("stream calls = %d, want retry once", len(prompts))
+	}
+	if prompts[0] != "生成图片：一只小猪喝酒" {
+		t.Fatalf("first prompt = %q", prompts[0])
+	}
+	if !strings.Contains(prompts[1], "请重新生成图片") || !strings.Contains(prompts[1], "我是一个文字模型") {
+		t.Fatalf("retry prompt = %q, want Chinese retry instruction with prior reason", prompts[1])
+	}
+}
+
+func TestHandleImageGenerationsReturnsChineseFailureWithoutPromptRetry(t *testing.T) {
+	engine := &Engine{
+		ImageTokenProvider: func(context.Context) (string, error) { return "test-token", nil },
+		ImageClientFactory: func(string) *backend.Client { return nil },
+	}
+	calls := 0
+	engine.StreamImageOutputsFunc = func(ctx context.Context, client *backend.Client, request ConversationRequest, index, total int) (<-chan ImageOutput, <-chan error) {
+		calls++
+		out := make(chan ImageOutput, 1)
+		errCh := make(chan error, 1)
+		close(out)
+		errCh <- fmt.Errorf("content policy blocked this image")
+		close(errCh)
+		return out, errCh
+	}
+
+	result, _, err := engine.HandleImageGenerations(context.Background(), map[string]any{
+		"prompt": "a wine poster",
+		"model":  "gpt-image-2",
+	})
+	if err == nil {
+		t.Fatal("HandleImageGenerations() error = nil, want Chinese failure")
+	}
+	if calls != 1 {
+		t.Fatalf("stream calls = %d, want no prompt retry for moderation error", calls)
+	}
+	var imageErr *ImageGenerationError
+	if !errors.As(err, &imageErr) {
+		t.Fatalf("error = %T %v, want ImageGenerationError", err, err)
+	}
+	if imageErr.StatusCode != 400 || imageErr.Code != "content_policy_violation" {
+		t.Fatalf("image error = %#v, want moderation status/code", imageErr)
+	}
+	if !strings.Contains(err.Error(), "触发安全审核或内容政策限制") {
+		t.Fatalf("error = %q, want Chinese moderation reason", err.Error())
+	}
+	if result["message"] != err.Error() {
+		t.Fatalf("result message = %#v, want error text", result["message"])
 	}
 }
 
@@ -586,6 +677,74 @@ func TestStreamImageOutputsWithPoolRunsRequestedImagesConcurrently(t *testing.T)
 	}
 }
 
+func TestStreamImageOutputsWithPoolCancelsWorkersWithoutClosedChannelSend(t *testing.T) {
+	engine := &Engine{
+		ImageTokenProvider: func(context.Context) (string, error) { return "test-token", nil },
+		ImageClientFactory: func(string) *backend.Client { return nil },
+	}
+
+	secondStarted := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	engine.StreamImageOutputsFunc = func(ctx context.Context, client *backend.Client, request ConversationRequest, index, total int) (<-chan ImageOutput, <-chan error) {
+		out := make(chan ImageOutput, 1)
+		errCh := make(chan error, 1)
+		if index == 1 {
+			go func() {
+				defer close(out)
+				defer close(errCh)
+				select {
+				case <-secondStarted:
+				case <-ctx.Done():
+				}
+				errCh <- fmt.Errorf("content policy blocked this image")
+			}()
+			return out, errCh
+		}
+		go func() {
+			defer close(out)
+			defer close(errCh)
+			select {
+			case <-secondStarted:
+			default:
+				close(secondStarted)
+			}
+			<-releaseSecond
+			out <- ImageOutput{
+				Kind:    "result",
+				Model:   request.Model,
+				Index:   index,
+				Total:   total,
+				Created: int64(index),
+				Data:    []map[string]any{{"url": imageURLForIndex(index)}},
+			}
+			errCh <- nil
+		}()
+		return out, errCh
+	}
+
+	outputs, errCh := engine.StreamImageOutputsWithPool(context.Background(), ConversationRequest{
+		Model: "gpt-image-2",
+		N:     2,
+	})
+
+	select {
+	case <-secondStarted:
+	case <-time.After(time.Second):
+		t.Fatal("second image worker did not start")
+	}
+	time.Sleep(120 * time.Millisecond)
+	close(releaseSecond)
+	for range outputs {
+	}
+	err := <-errCh
+	if err == nil {
+		t.Fatal("StreamImageOutputsWithPool() err = nil, want first worker error")
+	}
+	if errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "触发安全审核或内容政策限制") {
+		t.Fatalf("err = %v, want original Chinese moderation failure", err)
+	}
+}
+
 func TestStreamImageOutputsWithPoolHonorsImageOutputSlotAcquirer(t *testing.T) {
 	engine := &Engine{
 		ImageTokenProvider: func(context.Context) (string, error) { return "test-token", nil },
@@ -655,7 +814,7 @@ func TestStreamImageOutputsWithPoolHonorsImageOutputSlotAcquirer(t *testing.T) {
 	}
 }
 
-func TestStreamImageOutputsWithPoolDoesNotRotateOnGenericUnauthorized(t *testing.T) {
+func TestStreamImageOutputsWithPoolClassifiesGenericUnauthorizedWithoutPromptRetry(t *testing.T) {
 	usedTokens := []string(nil)
 	engine := &Engine{
 		ImageTokenProvider: func(context.Context) (string, error) {
@@ -685,14 +844,21 @@ func TestStreamImageOutputsWithPoolDoesNotRotateOnGenericUnauthorized(t *testing
 		t.Fatal("StreamImageOutputsWithPool() err = nil, want upstream error")
 	}
 	if len(usedTokens) != 1 {
-		t.Fatalf("used tokens = %#v, want one token without pool rotation", usedTokens)
+		t.Fatalf("used tokens = %#v, want no prompt retry for challenge error", usedTokens)
 	}
-	if !strings.Contains(err.Error(), "challenge_required") {
-		t.Fatalf("error = %q, want original upstream detail", err.Error())
+	var imageErr *ImageGenerationError
+	if !errors.As(err, &imageErr) {
+		t.Fatalf("err = %T %v, want ImageGenerationError", err, err)
+	}
+	if imageErr.StatusCode != 403 || imageErr.Code != "upstream_challenge_required" {
+		t.Fatalf("image error = %#v, want challenge status/code", imageErr)
+	}
+	if !strings.Contains(err.Error(), "风控验证页面") || !strings.Contains(err.Error(), "challenge_required") {
+		t.Fatalf("error = %q, want Chinese challenge guidance with original detail", err.Error())
 	}
 }
 
-func TestStreamImageOutputsWithPoolReportsCodexUnauthorizedPermission(t *testing.T) {
+func TestStreamImageOutputsWithPoolClassifiesCodexUnauthorizedPermissionWithoutPromptRetry(t *testing.T) {
 	usedTokens := []string(nil)
 	engine := &Engine{
 		ImageTokenProvider: func(context.Context) (string, error) {
@@ -722,10 +888,17 @@ func TestStreamImageOutputsWithPoolReportsCodexUnauthorizedPermission(t *testing
 		t.Fatal("StreamImageOutputsWithPool() err = nil, want permission error")
 	}
 	if len(usedTokens) != 1 {
-		t.Fatalf("used tokens = %#v, want one token without pool rotation", usedTokens)
+		t.Fatalf("used tokens = %#v, want no prompt retry for permission error", usedTokens)
 	}
-	if !strings.Contains(err.Error(), "codex-gpt-image-2 需要 Plus / Team / Pro 账号") {
-		t.Fatalf("error = %q, want Codex permission guidance", err.Error())
+	var imageErr *ImageGenerationError
+	if !errors.As(err, &imageErr) {
+		t.Fatalf("err = %T %v, want ImageGenerationError", err, err)
+	}
+	if imageErr.StatusCode != 403 || imageErr.Code != "account_not_authorized" {
+		t.Fatalf("image error = %#v, want permission status/code", imageErr)
+	}
+	if !strings.Contains(err.Error(), "上游账号无权限或登录凭证失效") {
+		t.Fatalf("error = %q, want Chinese permission guidance", err.Error())
 	}
 }
 
