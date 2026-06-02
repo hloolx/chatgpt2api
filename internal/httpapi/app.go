@@ -267,6 +267,7 @@ func (a *App) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	a.attachCreationTaskLimiter(body, identity)
 	model := firstNonEmpty(util.Clean(body["model"]), "auto")
 	if protocol.IsImageChatRequest(body) {
+		a.applyImageResponseFormatPolicy(body)
 		if err := validateImageCount(body); err != nil {
 			a.writeProtocolError(w, err)
 			return
@@ -297,6 +298,7 @@ func (a *App) handleResponses(w http.ResponseWriter, r *http.Request) {
 	a.attachCreationTaskLimiter(body, identity)
 	model := firstNonEmpty(util.Clean(body["model"]), "auto")
 	if protocol.HasResponseImageGenerationTool(body) {
+		a.applyImageResponseFormatPolicy(body)
 		if err := validateImageCount(body); err != nil {
 			a.writeProtocolError(w, err)
 			return
@@ -408,6 +410,11 @@ func (a *App) applyImageResponseFormatPolicy(body map[string]any) {
 		return
 	}
 	body["response_format"] = "url"
+	for _, tool := range util.AsMapSlice(body["tools"]) {
+		if util.Clean(tool["type"]) == "image_generation" {
+			tool["response_format"] = "url"
+		}
+	}
 }
 
 func validateImageCount(body map[string]any) error {
@@ -442,7 +449,9 @@ func (a *App) sanitizeProtocolResult(endpoint string, result map[string]any) map
 }
 
 func (a *App) shouldForceImageURLResponse(endpoint string) bool {
-	if endpoint != "/v1/images/generations" && endpoint != "/v1/images/edits" {
+	switch endpoint {
+	case "/v1/images/generations", "/v1/images/edits", "/v1/chat/completions", "/v1/responses":
+	default:
 		return false
 	}
 	return a != nil && a.config != nil && a.config.ForceImageURLResponse()

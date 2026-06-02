@@ -574,6 +574,23 @@ func TestStreamImageResponseDrainsMultipleImageOutputs(t *testing.T) {
 	}
 }
 
+func TestImageOutputItemsKeepsURLOnlyImages(t *testing.T) {
+	items := ImageOutputItems("draw", []map[string]any{{"url": "https://example.test/image.png", "revised_prompt": "draw revised"}}, "")
+	if len(items) != 1 {
+		t.Fatalf("ImageOutputItems() = %#v, want one URL image item", items)
+	}
+	if items[0]["result"] != "https://example.test/image.png" || items[0]["url"] != "https://example.test/image.png" {
+		t.Fatalf("URL image item = %#v", items[0])
+	}
+}
+
+func TestBuildChatImageMarkdownContentKeepsURLOnlyImages(t *testing.T) {
+	content := BuildChatImageMarkdownContent(map[string]any{"data": []map[string]any{{"url": "https://example.test/image.png"}}})
+	if content != "![image_1](https://example.test/image.png)" {
+		t.Fatalf("markdown = %q, want URL markdown", content)
+	}
+}
+
 func TestCollectImageOutputsMarksTextResponse(t *testing.T) {
 	outputs := make(chan ImageOutput)
 	close(outputs)

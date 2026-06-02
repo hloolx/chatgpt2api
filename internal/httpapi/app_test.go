@@ -1216,6 +1216,170 @@ func TestProtocolImageForceURLResponseReturnsPartialDataAfterTextFailure(t *test
 	}
 }
 
+func TestProtocolImageEditsForceURLResponseOverridesB64JSON(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+	if _, err := app.config.Update(map[string]any{"force_image_url_response": true}); err != nil {
+		t.Fatalf("Update() force_image_url_response error = %v", err)
+	}
+	_, rawKey, err := app.auth.CreateAPIKey(service.AuthRoleUser, "edit-url-response-user", service.AuthOwner{})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+	var mu sync.Mutex
+	var gotResponseFormats []string
+	installHTTPTestImageStreamFunc(t, app, func(ctx context.Context, client *backend.Client, request protocol.ConversationRequest, index, total int) (<-chan protocol.ImageOutput, <-chan error) {
+		mu.Lock()
+		gotResponseFormats = append(gotResponseFormats, request.ResponseFormat)
+		mu.Unlock()
+		return httpTestImageOutputStreamForRequestFormat(request, index)
+	})
+
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, newHTTPTestImageEditRequestWithResponseFormat(t, rawKey, 2, "b64_json"))
+	if res.Code != http.StatusOK {
+		t.Fatalf("image edit status = %d body = %s", res.Code, res.Body.String())
+	}
+	mu.Lock()
+	formats := append([]string(nil), gotResponseFormats...)
+	mu.Unlock()
+	if len(formats) != 2 {
+		t.Fatalf("upstream response format calls = %#v, want two images", formats)
+	}
+	for _, format := range formats {
+		if format != "url" {
+			t.Fatalf("upstream response formats = %#v, want forced url", formats)
+		}
+	}
+	var body map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response json: %v", err)
+	}
+	data := util.AsMapSlice(body["data"])
+	if len(data) != 2 {
+		t.Fatalf("response data = %#v, want two images", body["data"])
+	}
+	for _, item := range data {
+		if util.Clean(item["url"]) == "" {
+			t.Fatalf("response item missing url: %#v", item)
+		}
+		if _, ok := item["b64_json"]; ok {
+			t.Fatalf("b64_json leaked with force URL response enabled: %#v", item)
+		}
+	}
+}
+
+func TestProtocolImageForceURLResponseSanitizesStreamChunks(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+	if _, err := app.config.Update(map[string]any{"force_image_url_response": true}); err != nil {
+		t.Fatalf("Update() force_image_url_response error = %v", err)
+	}
+	_, rawKey, err := app.auth.CreateAPIKey(service.AuthRoleUser, "stream-url-response-user", service.AuthOwner{})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+	installHTTPTestImageStream(t, app)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"draw","model":"gpt-image-2","n":1,"response_format":"b64_json","stream":true}`))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	body := res.Body.String()
+	if res.Code != http.StatusOK {
+		t.Fatalf("stream image generation status = %d body = %s", res.Code, body)
+	}
+	if !strings.Contains(body, "image.generation.result") || !strings.Contains(body, "https://example.test/1.png") || !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("stream body missing URL result or done marker: %s", body)
+	}
+	if strings.Contains(body, "b64_json") || strings.Contains(body, "image-1") {
+		t.Fatalf("stream body leaked b64_json with force URL response enabled: %s", body)
+	}
+}
+
+func TestChatImageForceURLResponseUsesURLMarkdown(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+	if _, err := app.config.Update(map[string]any{"force_image_url_response": true}); err != nil {
+		t.Fatalf("Update() force_image_url_response error = %v", err)
+	}
+	_, rawKey, err := app.auth.CreateAPIKey(service.AuthRoleUser, "chat-url-response-user", service.AuthOwner{})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+	var gotResponseFormat string
+	installHTTPTestImageStreamFunc(t, app, func(ctx context.Context, client *backend.Client, request protocol.ConversationRequest, index, total int) (<-chan protocol.ImageOutput, <-chan error) {
+		gotResponseFormat = request.ResponseFormat
+		return httpTestImageOutputStreamForRequestFormat(request, index)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-image-2","messages":[{"role":"user","content":"draw"}],"n":1,"response_format":"b64_json"}`))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("chat image status = %d body = %s", res.Code, res.Body.String())
+	}
+	if gotResponseFormat != "url" {
+		t.Fatalf("chat image response format = %q, want url", gotResponseFormat)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response json: %v", err)
+	}
+	choices := util.AsMapSlice(body["choices"])
+	message := util.StringMap(choices[0]["message"])
+	content := util.Clean(message["content"])
+	if !strings.Contains(content, "![image_1](https://example.test/1.png)") {
+		t.Fatalf("chat content = %q, want URL markdown", content)
+	}
+	if strings.Contains(content, "data:image") || strings.Contains(res.Body.String(), "b64_json") {
+		t.Fatalf("chat response leaked base64 with force URL enabled: %s", res.Body.String())
+	}
+}
+
+func TestResponsesImageForceURLResponseUsesURLItem(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+	if _, err := app.config.Update(map[string]any{"force_image_url_response": true}); err != nil {
+		t.Fatalf("Update() force_image_url_response error = %v", err)
+	}
+	_, rawKey, err := app.auth.CreateAPIKey(service.AuthRoleUser, "responses-url-response-user", service.AuthOwner{})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+	var gotResponseFormat string
+	installHTTPTestImageStreamFunc(t, app, func(ctx context.Context, client *backend.Client, request protocol.ConversationRequest, index, total int) (<-chan protocol.ImageOutput, <-chan error) {
+		gotResponseFormat = request.ResponseFormat
+		return httpTestImageOutputStreamForRequestFormat(request, index)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-image-2","input":"draw","tools":[{"type":"image_generation","response_format":"b64_json"}],"n":1}`))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("responses image status = %d body = %s", res.Code, res.Body.String())
+	}
+	if gotResponseFormat != "url" {
+		t.Fatalf("responses image response format = %q, want url", gotResponseFormat)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response json: %v", err)
+	}
+	output := util.AsMapSlice(body["output"])
+	if len(output) != 1 {
+		t.Fatalf("responses output = %#v, want one image item", body["output"])
+	}
+	if output[0]["result"] != "https://example.test/1.png" || output[0]["url"] != "https://example.test/1.png" {
+		t.Fatalf("responses image item = %#v, want URL result", output[0])
+	}
+	if strings.Contains(res.Body.String(), "b64_json") || strings.Contains(res.Body.String(), "image-1") {
+		t.Fatalf("responses image leaked base64 with force URL enabled: %s", res.Body.String())
+	}
+}
+
 func TestProtocolImageDefaultVisibilityPublicAllowsAnonymousDownload(t *testing.T) {
 	app := newTestApp(t)
 	defer app.Close()
@@ -4258,6 +4422,27 @@ func httpTestImageOutputStream(request protocol.ConversationRequest, index int) 
 	return out, errCh
 }
 
+func httpTestImageOutputStreamForRequestFormat(request protocol.ConversationRequest, index int) (<-chan protocol.ImageOutput, <-chan error) {
+	out := make(chan protocol.ImageOutput, 1)
+	errCh := make(chan error, 1)
+	item := map[string]any{"url": fmt.Sprintf("https://example.test/%d.png", index)}
+	if request.ResponseFormat == "b64_json" {
+		item["b64_json"] = fmt.Sprintf("image-%d", index)
+	}
+	out <- protocol.ImageOutput{
+		Kind:    "result",
+		Model:   request.Model,
+		Index:   index,
+		Total:   request.N,
+		Created: int64(index),
+		Data:    []map[string]any{item},
+	}
+	close(out)
+	errCh <- nil
+	close(errCh)
+	return out, errCh
+}
+
 func httpTestLocalImageOutputStream(t *testing.T, app *App, request protocol.ConversationRequest, index int) (<-chan protocol.ImageOutput, <-chan error) {
 	t.Helper()
 	rel := filepath.ToSlash(filepath.Join("2026", "06", "02", fmt.Sprintf("local-%d.png", index)))
@@ -4345,6 +4530,10 @@ func profileBillingState(t *testing.T, app *App, rawKey string) map[string]any {
 }
 
 func newHTTPTestImageEditRequest(t *testing.T, rawKey string, n int) *http.Request {
+	return newHTTPTestImageEditRequestWithResponseFormat(t, rawKey, n, "url")
+}
+
+func newHTTPTestImageEditRequestWithResponseFormat(t *testing.T, rawKey string, n int, responseFormat string) *http.Request {
 	t.Helper()
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
@@ -4352,7 +4541,7 @@ func newHTTPTestImageEditRequest(t *testing.T, rawKey string, n int) *http.Reque
 		"model":           "gpt-image-2",
 		"prompt":          "edit",
 		"n":               strconv.Itoa(n),
-		"response_format": "url",
+		"response_format": responseFormat,
 	} {
 		if err := writer.WriteField(key, value); err != nil {
 			t.Fatalf("WriteField(%s) error = %v", key, err)
