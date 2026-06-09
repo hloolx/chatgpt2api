@@ -32,6 +32,12 @@ type testProtocolProxyConfig struct{}
 
 func (testProtocolProxyConfig) Proxy() string { return "" }
 
+type testProtocolAccountLookup map[string]map[string]any
+
+func (l testProtocolAccountLookup) GetAccount(accessToken string) map[string]any {
+	return l[accessToken]
+}
+
 func (c testProtocolImageConfig) ImagesDir() string {
 	path := filepath.Join(c.root, "images")
 	_ = os.MkdirAll(path, 0o755)
@@ -51,7 +57,11 @@ func (c testProtocolImageConfig) BaseURL() string {
 func TestFormatImageResultStoresOwnerName(t *testing.T) {
 	config := testProtocolImageConfig{root: t.TempDir()}
 	engine := &Engine{Config: config}
-	imageData := base64.StdEncoding.EncodeToString([]byte("png-bytes"))
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, image.NewNRGBA(image.Rect(0, 0, 1, 1))); err != nil {
+		t.Fatalf("png.Encode() error = %v", err)
+	}
+	imageData := base64.StdEncoding.EncodeToString(encoded.Bytes())
 
 	result := engine.FormatImageResult(
 		[]map[string]any{{"b64_json": imageData}},
@@ -83,6 +93,59 @@ func TestFormatImageResultStoresOwnerName(t *testing.T) {
 	}
 	if meta["owner_id"] != "linuxdo:41499" || meta["owner_name"] != "Cassianvale" {
 		t.Fatalf("metadata = %#v", meta)
+	}
+}
+
+func TestFormatImageResultSavesRawBytesAsRequestedFormat(t *testing.T) {
+	config := testProtocolImageConfig{root: t.TempDir()}
+	engine := &Engine{Config: config}
+	src := image.NewNRGBA(image.Rect(0, 0, 2, 2))
+	src.Set(0, 0, color.NRGBA{R: 255, A: 255})
+	src.Set(1, 0, color.NRGBA{G: 255, A: 255})
+	src.Set(0, 1, color.NRGBA{B: 255, A: 255})
+	src.Set(1, 1, color.NRGBA{R: 255, G: 255, B: 255, A: 255})
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, src); err != nil {
+		t.Fatalf("png.Encode() error = %v", err)
+	}
+	compression := 20
+
+	result := engine.FormatImageResultWithOptions(
+		[]map[string]any{{imageResultBytesKey: encoded.Bytes(), "revised_prompt": "raw bytes"}},
+		"draw",
+		"url",
+		"https://example.test",
+		"owner-1",
+		"Alice",
+		123,
+		"",
+		ImageOutputOptions{Format: "jpeg", Compression: &compression},
+	)
+	items, _ := result["data"].([]map[string]any)
+	if len(items) != 1 {
+		t.Fatalf("FormatImageResultWithOptions() data = %#v", result["data"])
+	}
+	if _, ok := items[0]["b64_json"]; ok {
+		t.Fatalf("url response unexpectedly includes b64_json: %#v", items[0])
+	}
+	if items[0]["output_format"] != "jpeg" {
+		t.Fatalf("output_format = %#v, want jpeg", items[0]["output_format"])
+	}
+	imageURL, _ := items[0]["url"].(string)
+	if !strings.HasSuffix(imageURL, ".jpg") {
+		t.Fatalf("image url = %q, want .jpg suffix", imageURL)
+	}
+	rel := strings.TrimPrefix(imageURL, "https://example.test/images/")
+	stored, err := os.ReadFile(filepath.Join(config.ImagesDir(), filepath.FromSlash(rel)))
+	if err != nil {
+		t.Fatalf("ReadFile(stored image) error = %v", err)
+	}
+	_, format, err := image.DecodeConfig(bytes.NewReader(stored))
+	if err != nil {
+		t.Fatalf("DecodeConfig(stored image) error = %v", err)
+	}
+	if format != "jpeg" {
+		t.Fatalf("stored format = %q, want jpeg", format)
 	}
 }
 
@@ -584,6 +647,60 @@ func TestIsFinalImageTextEventKeepsQueuedImageNoticePending(t *testing.T) {
 
 	if isFinalImageTextEvent(event) {
 		t.Fatalf("isFinalImageTextEvent(%#v) = true, want false for queued image notice", event)
+	}
+}
+
+func TestStreamResponsesImageOutputsReturnsAfterFinalImageResult(t *testing.T) {
+	const png1x1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2ioAAAAASUVORK5CYII="
+	requestCancelled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"response.output_item.done","item":{"id":"img_1","type":"image_generation_call","result":"` + png1x1 + `","revised_prompt":"draw","output_format":"png"}}` + "\n\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		select {
+		case <-r.Context().Done():
+		case <-time.After(1500 * time.Millisecond):
+		}
+		close(requestCancelled)
+	}))
+	defer server.Close()
+
+	client := backend.NewClient("token-1", testProtocolAccountLookup{
+		"token-1": {"chatgpt_account_id": "acct-1"},
+	}, service.NewProxyService(testProtocolProxyConfig{}))
+	client.BaseURL = server.URL
+	engine := &Engine{Config: testProtocolImageConfig{root: t.TempDir()}}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	started := time.Now()
+	outputs, errCh := engine.StreamResponsesImageOutputs(ctx, client, ConversationRequest{
+		Prompt:         "draw",
+		Model:          util.ImageModelCodex,
+		N:              1,
+		ResponseFormat: "url",
+		BaseURL:        "https://example.test",
+	}, 1, 1)
+	result, err := engine.CollectImageOutputs(outputs, errCh)
+	if err != nil {
+		t.Fatalf("CollectImageOutputs() err = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("CollectImageOutputs() took %s, want return before upstream stream closes", elapsed)
+	}
+	data := util.AsMapSlice(result["data"])
+	if len(data) != 1 || util.Clean(data[0]["url"]) == "" {
+		t.Fatalf("result data = %#v, want one saved image URL", result["data"])
+	}
+	select {
+	case <-requestCancelled:
+	case <-time.After(time.Second):
+		t.Fatal("upstream stream was not cancelled after final image result")
 	}
 }
 

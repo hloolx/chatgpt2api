@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -14,6 +15,17 @@ import (
 
 func ptrInt(value int) *int {
 	return &value
+}
+
+func imageEventBytesEqual(event ResponsesImageEvent, want []byte) bool {
+	if len(event.ImageData) > 0 {
+		return bytes.Equal(event.ImageData, want)
+	}
+	if event.Result == "" {
+		return false
+	}
+	got, err := base64.StdEncoding.DecodeString(event.Result)
+	return err == nil && bytes.Equal(got, want)
 }
 
 func newTestBackendClient(server *httptest.Server) *Client {
@@ -265,7 +277,7 @@ func TestStreamResponsesImageUsesOfficialPrepareAndConversationRoutes(t *testing
 	})
 	var results []ResponsesImageEvent
 	for event := range events {
-		if event.Result != "" {
+		if event.HasImageResult() {
 			results = append(results, event)
 		}
 	}
@@ -275,11 +287,14 @@ func TestStreamResponsesImageUsesOfficialPrepareAndConversationRoutes(t *testing
 	if len(results) != 1 {
 		t.Fatalf("result events = %#v", results)
 	}
+	if results[0].Result != "" {
+		t.Fatalf("official image result used base64 field, want raw image bytes")
+	}
 	if results[0].ConversationID != "conv-1" {
 		t.Fatalf("conversation id = %q, want conv-1", results[0].ConversationID)
 	}
-	if results[0].Result != png1x1 {
-		t.Fatalf("result = %q, want %q", results[0].Result, png1x1)
+	if !imageEventBytesEqual(results[0], imageBytes) {
+		t.Fatalf("result bytes = %#v, want PNG bytes", results[0])
 	}
 	if prepareBody["model"] != "gpt-5-5" {
 		t.Fatalf("prepare model = %#v, want gpt-5-5", prepareBody["model"])
@@ -356,7 +371,7 @@ func TestStreamResponsesImageUsesDirectSSEImageAssetPointer(t *testing.T) {
 	})
 	var results []ResponsesImageEvent
 	for event := range events {
-		if event.Result != "" {
+		if event.HasImageResult() {
 			results = append(results, event)
 		}
 	}
@@ -366,7 +381,7 @@ func TestStreamResponsesImageUsesDirectSSEImageAssetPointer(t *testing.T) {
 	if pollCount != 0 {
 		t.Fatalf("conversation poll count = %d, want direct SSE asset to avoid polling", pollCount)
 	}
-	if len(results) != 1 || results[0].Result != png1x1 {
+	if len(results) != 1 || !imageEventBytesEqual(results[0], imageBytes) {
 		t.Fatalf("results = %#v, want one direct image result", results)
 	}
 }
@@ -418,7 +433,7 @@ func TestStreamResponsesImageIgnoresFalseToolInvokedForImageGenResult(t *testing
 	var results []ResponsesImageEvent
 	var textResponses []ResponsesImageEvent
 	for event := range events {
-		if event.Result != "" {
+		if event.HasImageResult() {
 			results = append(results, event)
 		}
 		if event.Type == "image_text_response" {
@@ -431,7 +446,7 @@ func TestStreamResponsesImageIgnoresFalseToolInvokedForImageGenResult(t *testing
 	if len(textResponses) != 0 {
 		t.Fatalf("text responses = %#v, want none for successful image gen", textResponses)
 	}
-	if len(results) != 1 || results[0].Result != png1x1 {
+	if len(results) != 1 || !imageEventBytesEqual(results[0], imageBytes) {
 		t.Fatalf("results = %#v, want one image result", results)
 	}
 }
@@ -570,7 +585,7 @@ func TestStreamResponsesImageDoesNotTreatQueuedAssistantNoticeAsFinalText(t *tes
 		if strings.TrimSpace(event.Text) != "" {
 			texts = append(texts, event.Text)
 		}
-		if event.Result != "" {
+		if event.HasImageResult() {
 			results = append(results, event)
 		}
 	}
@@ -580,7 +595,7 @@ func TestStreamResponsesImageDoesNotTreatQueuedAssistantNoticeAsFinalText(t *tes
 	if pollCount == 0 {
 		t.Fatal("expected conversation polling after queued assistant notice")
 	}
-	if len(results) != 1 || results[0].Result != png1x1 {
+	if len(results) != 1 || !imageEventBytesEqual(results[0], imageBytes) {
 		t.Fatalf("results = %#v, want one final image result", results)
 	}
 }
@@ -637,7 +652,7 @@ func TestStreamResponsesImageRetriesConversationPollRateLimit(t *testing.T) {
 	})
 	var results []ResponsesImageEvent
 	for event := range events {
-		if event.Result != "" {
+		if event.HasImageResult() {
 			results = append(results, event)
 		}
 	}
@@ -647,7 +662,7 @@ func TestStreamResponsesImageRetriesConversationPollRateLimit(t *testing.T) {
 	if pollCount != 2 {
 		t.Fatalf("conversation poll count = %d, want retry after rate limit", pollCount)
 	}
-	if len(results) != 1 || results[0].Result != png1x1 {
+	if len(results) != 1 || !imageEventBytesEqual(results[0], imageBytes) {
 		t.Fatalf("results = %#v, want one final image result", results)
 	}
 }
@@ -693,7 +708,7 @@ func TestStreamResponsesImageReturnsPolledConversationText(t *testing.T) {
 		if event.Type == "image_text_response" {
 			textEvents = append(textEvents, event)
 		}
-		if event.Result != "" {
+		if event.HasImageResult() {
 			results = append(results, event)
 		}
 	}
@@ -751,7 +766,7 @@ func TestStreamResponsesImageEmitsFinalTextWhenNoImageResult(t *testing.T) {
 		if strings.TrimSpace(event.Text) != "" {
 			texts = append(texts, event.Text)
 		}
-		if event.Result != "" {
+		if event.HasImageResult() {
 			results = append(results, event)
 		}
 	}
@@ -887,7 +902,7 @@ func TestResolveOfficialImageResultsRetriesTransientDownloadURL404(t *testing.T)
 	if downloadAttempts != officialImageDownloadAttempts {
 		t.Fatalf("download attempts = %d, want %d", downloadAttempts, officialImageDownloadAttempts)
 	}
-	if len(results) != 1 || results[0].Result != png1x1 {
+	if len(results) != 1 || !imageEventBytesEqual(results[0], imageBytes) {
 		t.Fatalf("results = %#v, want one final image result", results)
 	}
 }
@@ -938,7 +953,7 @@ func TestResolveOfficialImageResultsUsesConversationScopedFileDownloadForSedimen
 	if fileURLAttempts != 1 {
 		t.Fatalf("file URL attempts = %d, want 1", fileURLAttempts)
 	}
-	if len(results) != 1 || results[0].Result != png1x1 {
+	if len(results) != 1 || !imageEventBytesEqual(results[0], imageBytes) {
 		t.Fatalf("results = %#v, want one final image result", results)
 	}
 }
@@ -984,7 +999,7 @@ func TestResolveOfficialImageResultsAuthenticatesBackendDownloadURL(t *testing.T
 	if err != nil {
 		t.Fatalf("resolveOfficialImageResults() error = %v", err)
 	}
-	if len(results) != 1 || results[0].Result != png1x1 {
+	if len(results) != 1 || !imageEventBytesEqual(results[0], imageBytes) {
 		t.Fatalf("results = %#v, want one final image result", results)
 	}
 }

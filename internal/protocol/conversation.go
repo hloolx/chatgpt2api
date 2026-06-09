@@ -204,6 +204,8 @@ type ImageOutput struct {
 	ChargeHandled     bool
 }
 
+const imageResultBytesKey = "_image_bytes"
+
 type ImageOutputProgressCallback func([]map[string]any)
 
 type indexedImageOutputData struct {
@@ -778,11 +780,13 @@ func (e *Engine) StreamResponsesImageOutputs(ctx context.Context, client *backen
 	go func() {
 		defer close(out)
 		defer close(errCh)
+		streamCtx, cancelStream := context.WithCancel(ctx)
+		defer cancelStream()
 		prompt := buildResponsesImagePrompt(request.Prompt, request.Size, request.Model)
 		if strings.TrimSpace(prompt) == "" {
 			prompt = request.Prompt
 		}
-		events, upstreamErr := client.StreamResponsesImage(ctx, backend.ResponsesImageRequest{
+		events, upstreamErr := client.StreamResponsesImage(streamCtx, backend.ResponsesImageRequest{
 			Prompt:            prompt,
 			Model:             request.Model,
 			Size:              request.Size,
@@ -812,20 +816,30 @@ func (e *Engine) StreamResponsesImageOutputs(ctx context.Context, client *backen
 					errCh <- err
 					return
 				}
-				continue
+				cancelStream()
+				errCh <- nil
+				return
 			}
-			if event.Result == "" {
+			if !event.HasImageResult() {
 				continue
 			}
 			key := firstNonEmpty(event.ItemID, event.Result)
+			if key == "" && len(event.ImageData) > 0 {
+				sum := md5.Sum(event.ImageData)
+				key = hex.EncodeToString(sum[:])
+			}
 			if _, ok := seen[key]; ok {
 				continue
 			}
 			seen[key] = struct{}{}
 			item := map[string]any{
-				"b64_json":       event.Result,
 				"revised_prompt": firstNonEmpty(event.RevisedPrompt, prompt),
 				"output_format":  firstNonEmpty(event.OutputFormat, request.OutputFormat),
+			}
+			if len(event.ImageData) > 0 {
+				item[imageResultBytesKey] = event.ImageData
+			} else {
+				item["b64_json"] = event.Result
 			}
 			if event.Background != "" {
 				item["background"] = event.Background
@@ -853,6 +867,9 @@ func (e *Engine) StreamResponsesImageOutputs(ctx context.Context, client *backen
 					errCh <- err
 					return
 				}
+				cancelStream()
+				errCh <- nil
+				return
 			}
 		}
 		if err := <-upstreamErr; err != nil {
@@ -927,7 +944,7 @@ func firstNonZeroInt64(values ...int64) int64 {
 }
 
 func isFinalImageTextEvent(event backend.ResponsesImageEvent) bool {
-	if strings.TrimSpace(event.Text) == "" || event.Result != "" {
+	if strings.TrimSpace(event.Text) == "" || event.HasImageResult() {
 		return false
 	}
 	if event.Type == "image_text_response" {
@@ -1105,13 +1122,9 @@ func (e *Engine) formatImageResultWithOptions(items []map[string]any, prompt, re
 	hasRequestedFormat := strings.TrimSpace(options.Format) != ""
 	var data []map[string]any
 	for _, item := range items {
-		b64 := util.Clean(item["b64_json"])
-		if b64 == "" {
-			continue
-		}
 		revised := firstNonEmpty(util.Clean(item["revised_prompt"]), prompt)
-		imageBytes, err := base64.StdEncoding.DecodeString(b64)
-		if err != nil {
+		imageBytes, ok := imageBytesFromResultItem(item)
+		if !ok {
 			continue
 		}
 		itemOptions := options
@@ -1134,6 +1147,7 @@ func (e *Engine) formatImageResultWithOptions(items []map[string]any, prompt, re
 			}
 		}
 		if !itemOptions.TrustUpstreamFormat {
+			var err error
 			imageBytes, err = encodeImageBytes(imageBytes, itemOptions)
 			if err != nil {
 				continue
@@ -1172,6 +1186,24 @@ func (e *Engine) formatImageResultWithOptions(items []map[string]any, prompt, re
 		result["message"] = message
 	}
 	return result, nil
+}
+
+func imageBytesFromResultItem(item map[string]any) ([]byte, bool) {
+	if len(item) == 0 {
+		return nil, false
+	}
+	if raw, ok := item[imageResultBytesKey].([]byte); ok && len(raw) > 0 {
+		return raw, true
+	}
+	b64 := util.Clean(item["b64_json"])
+	if b64 == "" {
+		return nil, false
+	}
+	imageBytes, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return nil, false
+	}
+	return imageBytes, true
 }
 
 // savedImageResult holds the result of saving an image, including cloud storage metadata.
@@ -1254,7 +1286,9 @@ func imageFileExtension(outputFormat string) string {
 func encodeImageBytes(data []byte, options ImageOutputOptions) ([]byte, error) {
 	format := NormalizeImageOutputFormat(options.Format)
 	if format == "png" {
-		return data, nil
+		if imageBytesAlreadyFormat(data, "png") {
+			return data, nil
+		}
 	}
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
@@ -1285,6 +1319,22 @@ func encodeImageBytes(data []byte, options ImageOutputOptions) ([]byte, error) {
 		}
 	}
 	return buf.Bytes(), nil
+}
+
+func imageBytesAlreadyFormat(data []byte, format string) bool {
+	if len(data) == 0 {
+		return false
+	}
+	switch NormalizeImageOutputFormat(format) {
+	case "png":
+		return bytes.HasPrefix(data, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'})
+	case "jpeg":
+		return len(data) >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff
+	case "webp":
+		return len(data) >= 12 && bytes.HasPrefix(data, []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WEBP"))
+	default:
+		return false
+	}
 }
 
 func flattenAlpha(img image.Image) image.Image {

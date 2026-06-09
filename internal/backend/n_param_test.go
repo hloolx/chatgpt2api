@@ -59,7 +59,7 @@ func TestNParamSequential(t *testing.T) {
 		hasError := false
 
 		for event := range events {
-			if event.Result != "" {
+			if event.HasImageResult() {
 				imagesForCall++
 				totalImages++
 			}
@@ -162,7 +162,7 @@ func TestNParamParallel(t *testing.T) {
 			var imagesForCall int32
 			var conversationID string
 			for event := range events {
-				if event.Result != "" {
+				if event.HasImageResult() {
 					imagesForCall++
 				}
 				if strings.TrimSpace(event.ConversationID) != "" {
@@ -179,7 +179,7 @@ func TestNParamParallel(t *testing.T) {
 				Images:         int(imagesForCall),
 				ConversationID: conversationID,
 				Duration:       elapsed,
-				Error:          func() string {
+				Error: func() string {
 					if err != nil {
 						return err.Error()
 					}
@@ -387,7 +387,7 @@ func TestNParamDiagnostic(t *testing.T) {
 
 	for event := range events {
 		count++
-		if event.Result != "" {
+		if event.HasImageResult() {
 			imageCount++
 		}
 		if strings.TrimSpace(event.ConversationID) != "" {
@@ -402,10 +402,10 @@ func TestNParamDiagnostic(t *testing.T) {
 		summary := map[string]any{
 			"type":                event.Type,
 			"has_conversation_id": strings.TrimSpace(event.ConversationID) != "",
-			"has_result":          event.Result != "",
+			"has_result":          event.HasImageResult(),
 			"text":                text,
 			"blocked":             event.Blocked,
-			"tool_invoked":        func() any {
+			"tool_invoked": func() any {
 				if event.ToolInvoked != nil {
 					return *event.ToolInvoked
 				}

@@ -71,6 +71,7 @@ type ResponsesImageEvent struct {
 	Type              string
 	ItemID            string
 	Result            string
+	ImageData         []byte
 	PartialImage      string
 	PartialImageIndex int
 	RevisedPrompt     string
@@ -88,6 +89,10 @@ type ResponsesImageEvent struct {
 	ToolInvoked       *bool
 	TurnUseCase       string
 	Raw               map[string]any
+}
+
+func (e ResponsesImageEvent) HasImageResult() bool {
+	return strings.TrimSpace(e.Result) != "" || len(e.ImageData) > 0
 }
 
 type uploadedImageRef struct {
@@ -490,7 +495,7 @@ func parseResponsesImagePayload(payload string) (ResponsesImageEvent, bool, erro
 			return event, false, nil
 		}
 		mergeResponsesImageItem(&event, item)
-		return event, event.Result != "", nil
+		return event, event.HasImageResult(), nil
 	case "response.completed":
 		response := util.StringMap(data["response"])
 		for _, raw := range anySlice(response["output"]) {
@@ -499,7 +504,7 @@ func parseResponsesImagePayload(payload string) (ResponsesImageEvent, bool, erro
 				continue
 			}
 			mergeResponsesImageItem(&event, item)
-			return event, event.Result != "", nil
+			return event, event.HasImageResult(), nil
 		}
 		return event, false, nil
 	case "error":
@@ -926,7 +931,7 @@ func iterOfficialImageSSE(ctx context.Context, client *Client, reader io.Reader,
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		if event.Result != "" {
+		if event.HasImageResult() {
 			emittedResult = true
 		}
 	}
@@ -1040,7 +1045,7 @@ func isPendingOfficialImageText(text string) bool {
 }
 
 func shouldTreatOfficialImageEventAsFinalText(event ResponsesImageEvent) bool {
-	if strings.TrimSpace(event.Text) == "" || event.Result != "" {
+	if strings.TrimSpace(event.Text) == "" || event.HasImageResult() {
 		return false
 	}
 	if event.Blocked {
@@ -1105,7 +1110,7 @@ func parseOfficialImagePayload(payload string, state *imageConversationState) (R
 		TurnUseCase:    state.TurnUseCase,
 		Raw:            data,
 	}
-	if message := officialImageTextMessage(data); message != "" && event.Result == "" {
+	if message := officialImageTextMessage(data); message != "" && !event.HasImageResult() {
 		event.Text = message
 	}
 	switch eventType {
@@ -1313,7 +1318,7 @@ func (c *Client) resolveOfficialImageResults(ctx context.Context, request Respon
 		results = append(results, ResponsesImageEvent{
 			Type:           "image_result",
 			ItemID:         fmt.Sprintf("image_%d", index+1),
-			Result:         base64.StdEncoding.EncodeToString(data),
+			ImageData:      data,
 			RevisedPrompt:  strings.TrimSpace(request.Prompt),
 			OutputFormat:   "png",
 			Created:        time.Now().Unix(),
